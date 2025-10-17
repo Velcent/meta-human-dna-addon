@@ -1,13 +1,16 @@
 ## Minor Changes
-* Created new bindings for Unreal 5.6. (You must update your build tool to `0.6.0` or greater now or the built addon won't work)
-* Added validate option to output panel. By default the validations are run before export, but this option allows the user to turn them off.
+* Added custom color space support [#173](https://github.com/poly-hammer/meta-human-dna-addon/issues/173)
+* Added eye aim control [#189](https://github.com/poly-hammer/meta-human-dna-addon/issues/189)
 
 ## Patch Changes
-* Fixed Edit bone rotations on the body are not calibrating[#139](https://github.com/poly-hammer/meta-human-dna-addon/issues/139)
-* Fixed Mesh origin validation [#140](https://github.com/poly-hammer/meta-human-dna-addon/issues/140)
-* Fixed Multi-Language support [#141](https://github.com/poly-hammer/meta-human-dna-addon/issues/141)
-* Fixed Seam from Misaligned bones roll on convert [#155](https://github.com/poly-hammer/meta-human-dna-addon/issues/155)
-* Fixed Head LOD to Body LOD mapping. There are twice as many head LODs as body LODs.
+* Fixed disappearing component sub-panels under RigLogic panel [#167](https://github.com/poly-hammer/meta-human-dna-addon/issues/167)
+* Fixed fps scale when importing face board animation [#186](https://github.com/poly-hammer/meta-human-dna-addon/issues/186)
+* Fixed face board pose order [#177](https://github.com/poly-hammer/meta-human-dna-addon/issues/177)
+* Added custom operator `File > Import > MetaHuman Link/Append` that allows users to link and append metahuman rigs from other .blend files [#169](https://github.com/poly-hammer/meta-human-dna-addon/issues/169)
+* Fixed face board switches [#165](https://github.com/poly-hammer/meta-human-dna-addon/issues/165)
+* Fixed multiplied textures [#145](https://github.com/poly-hammer/meta-human-dna-addon/issues/145)
+* Fixed incorrect wrinkle map poses [#42](https://github.com/poly-hammer/meta-human-dna-addon/issues/42)
+* Fixed namespace bug with multiple rig instances
 
 
 > [!WARNING]  

@@ -3,7 +3,7 @@ import math
 import bmesh
 import logging
 from typing import Literal
-from mathutils import Vector, Matrix, Euler
+from mathutils import Vector, Matrix, Euler, Quaternion
 from .misc import (
     exclude_rig_logic_evaluation,
     preserve_context,
@@ -26,7 +26,8 @@ logger = logging.getLogger(__name__)
 
 def get_bone_rest_transformations(
         bone: bpy.types.Bone, 
-        force_object_space: bool = False
+        force_object_space: bool = False,
+        rotation_mode: str = 'XYZ'
     ) -> tuple[Vector, Euler, Vector, Matrix]:
     try:
         if force_object_space:
@@ -44,7 +45,10 @@ def get_bone_rest_transformations(
     # get respective transforms in parent space
     rest_location, rest_rotation, rest_scale = bone_matrix_parent_space.decompose()
 
-    return rest_location, rest_rotation.to_euler('XYZ'), rest_scale, rest_to_parent_matrix # type: ignore
+    if rotation_mode == 'XYZ':
+        rest_rotation = rest_rotation.to_euler('XYZ')
+
+    return rest_location, rest_rotation, rest_scale, rest_to_parent_matrix # type: ignore
 
 def get_bone_shape(name: str = CUSTOM_BONE_SHAPE_NAME):
     rotations = [
@@ -501,3 +505,14 @@ def auto_fit_bones(
             )
     else:
         logger.error('Auto-fitting failed. Please check the input data.')
+
+@preserve_context
+def reset_pose(rig_object: bpy.types.Object):
+    switch_to_pose_mode(rig_object)
+
+    # reset to rest pose
+    for pose_bone in rig_object.pose.bones: # type: ignore
+        pose_bone.rotation_quaternion = Quaternion((1, 0, 0, 0)) # type: ignore
+        pose_bone.rotation_euler = Euler((0, 0, 0)) # type: ignore
+        pose_bone.location = Vector((0, 0, 0)) # type: ignore
+        pose_bone.scale = Vector((1, 1, 1)) # type: ignore
