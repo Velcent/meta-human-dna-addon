@@ -4,7 +4,7 @@ import math
 import queue
 import shutil
 import logging
-from mathutils import Vector, Matrix
+from mathutils import Vector, Matrix, Euler
 from pathlib import Path
 from datetime import datetime, timedelta
 from .ui import importer, callbacks
@@ -12,7 +12,8 @@ from . import utilities
 from .dna_io import (
     DNACalibrator, 
     DNAExporter,
-    get_dna_reader
+    get_dna_reader,
+    get_dna_writer
 )
 from .properties import MetahumanDnaImportProperties, BlendFileMetaHumanCollection
 from .components import (
@@ -29,7 +30,9 @@ from .constants import (
     HEAD_TEXTURE_LOGIC_NODE_NAME,
     HEAD_TEXTURE_LOGIC_NODE_LABEL,
     SHAPE_KEY_BASIS_NAME,
-    FACE_BOARD_NAME
+    FACE_BOARD_NAME,
+    BONE_DELTA_THRESHOLD,
+    RBF_SOLVER_POSTFIX
 )
 
 logger = logging.getLogger(__name__)
@@ -196,57 +199,53 @@ class AppendOrLinkMetaHuman(bpy.types.Operator, importer.LinkAppendMetaHumanImpo
             # Extract the rig instance data from the .blend file and set them on the new rig instance
             instance = utilities.add_rig_instance(name=collection_name)
             instance.head_dna_file_path = data[collection_name]['head_dna_file_path']
-            instance.head_mesh = bpy.data.objects.get(data[collection_name]['head_mesh'])
-            instance.head_rig = bpy.data.objects.get(data[collection_name]['head_rig'])
-            instance.head_material = bpy.data.materials.get(data[collection_name]['head_material'])
-            instance.body_mesh = bpy.data.objects.get(data[collection_name]['body_mesh'])
-            instance.body_rig = bpy.data.objects.get(data[collection_name]['body_rig'])
-            instance.body_material = bpy.data.materials.get(data[collection_name]['body_material'])
+            instance.head_mesh = bpy.data.objects.get(data[collection_name]['head_mesh'] or '')
+            instance.head_rig = bpy.data.objects.get(data[collection_name]['head_rig'] or '')
+            instance.head_material = bpy.data.materials.get(data[collection_name]['head_material'] or '')
+            instance.body_mesh = bpy.data.objects.get(data[collection_name]['body_mesh'] or '')
+            instance.body_rig = bpy.data.objects.get(data[collection_name]['body_rig'] or '')
+            instance.body_material = bpy.data.materials.get(data[collection_name]['body_material'] or '')
             instance.body_dna_file_path = data[collection_name]['body_dna_file_path']
             instance.output_folder_path = data[collection_name]['output_folder_path']
 
-            face_board = bpy.data.objects.get(data[collection_name]['face_board'])
-            if data[collection_name]['face_board']:
-                # duplicate the face board if there is one already in the scene
-                if any(i.face_board for i in context.scene.meta_human_dna.rig_logic_instance_list): # type: ignore
-                    instance.face_board = utilities.duplicate_face_board(name=collection_name)
-                # otherwise import it
-                else:
-                    instance.face_board = utilities.import_face_board(name=collection_name)
-                
-                # position the face board next to the head mesh
-                if instance.face_board:
-                    utilities.position_face_board(
-                        head_mesh_object=instance.head_mesh, 
-                        head_rig_object=instance.head_rig, 
-                        face_board_object=instance.face_board
+            # duplicate the face board if there is one already in the scene
+            if any(i.face_board for i in context.scene.meta_human_dna.rig_logic_instance_list): # type: ignore
+                instance.face_board = utilities.duplicate_face_board(name=collection_name)
+            # otherwise import it
+            else:
+                instance.face_board = utilities.import_face_board(name=collection_name)
+            
+            # position the face board next to the head mesh
+            if instance.face_board:
+                utilities.position_face_board(
+                    head_mesh_object=instance.head_mesh, 
+                    head_rig_object=instance.head_rig, 
+                    face_board_object=instance.face_board
+                )
+                if self.operation_type != 'LINK':
+                    utilities.move_to_collection(
+                        scene_objects=[instance.face_board],
+                        collection_name=collection_name,
+                        exclusively=True
                     )
-                    if self.operation_type != 'LINK':
-                        utilities.move_to_collection(
-                            scene_objects=[instance.face_board],
-                            collection_name=collection_name,
-                            exclusively=True
-                        )
 
-                    utilities.constrain_face_board_to_head(
-                        face_board_object=instance.face_board,
-                        head_rig_object=instance.head_rig,
-                        body_rig_object=instance.body_rig,
-                        bone_name='CTRL_faceGUI'
-                    )
-                    utilities.constrain_face_board_to_head(
-                        face_board_object=instance.face_board,
-                        head_rig_object=instance.head_rig,
-                        body_rig_object=instance.body_rig,
-                        bone_name='CTRL_C_eyesAim'
-                    )
+                utilities.constrain_face_board_to_head(
+                    face_board_object=instance.face_board,
+                    head_rig_object=instance.head_rig,
+                    body_rig_object=instance.body_rig,
+                    bone_name='CTRL_faceGUI'
+                )
+                utilities.constrain_face_board_to_head(
+                    face_board_object=instance.face_board,
+                    head_rig_object=instance.head_rig,
+                    body_rig_object=instance.body_rig,
+                    bone_name='CTRL_C_eyesAim'
+                )
 
         return {'FINISHED'}
+    
 
-class ImportFaceBoardAnimation(bpy.types.Operator, importer.ImportAnimation):
-    """Import an animation for the metahuman face board exported from an Unreal Engine Level Sequence"""
-    bl_idname = "meta_human_dna.import_animation"
-    bl_label = "Import Animation"
+class ImportAnimationBase(bpy.types.Operator):
     filename_ext = ".fbx"
 
     filter_glob: bpy.props.StringProperty(
@@ -272,6 +271,32 @@ class ImportFaceBoardAnimation(bpy.types.Operator, importer.ImportAnimation):
             "will scale the animation curves to match the current scene frame rate"
         )
     ) # type: ignore
+
+    prefix_instance_name: bpy.props.BoolProperty(
+        name="Prefix Instance Name",
+        default=True,
+        description="Prefixes the baked action name with the rig instance name. This helps avoid name collisions with other action names when multiple are in the same scene."
+    ) # type: ignore
+
+    prefix_component_name: bpy.props.BoolProperty(
+        name="Prefix Component Name",
+        default=True,
+        description="Prefixes the baked action name with the component name. This helps avoid name collisions with other components that might have the same action names."
+    ) # type: ignore
+
+    @property
+    def settings_title(self) -> str:
+        return "Animation Import Settings:"
+
+
+class ImportFaceBoardAnimation(ImportAnimationBase, importer.ImportAnimation):
+    """Import an animation for the metahuman face board exported from an Unreal Engine Level Sequence"""
+    bl_idname = "meta_human_dna.import_face_board_animation"
+    bl_label = "Import"
+
+    @property
+    def settings_title(self) -> str:
+        return "Face Board Animation Import Settings:"
 
     def execute(self, context):
         logger.info(f'Importing animation {self.filepath}')  # type: ignore
@@ -281,45 +306,23 @@ class ImportFaceBoardAnimation(bpy.types.Operator, importer.ImportAnimation):
                 Path(self.filepath), # type: ignore
                 is_face_board=True,
                 round_sub_frames=self.round_sub_frames,
-                match_frame_rate=self.match_frame_rate
+                match_frame_rate=self.match_frame_rate,
+                prefix_instance_name=self.prefix_instance_name,
+                prefix_component_name=self.prefix_component_name
             )
         return {'FINISHED'}
     
-class ImportComponentAnimation(bpy.types.Operator, importer.ImportAnimation):
+
+class ImportComponentAnimation(ImportAnimationBase, importer.ImportAnimation):
     """Import an animation for the selected metahuman component that has been exported from an Unreal Engine"""
     bl_idname = "meta_human_dna.import_component_animation"
-    bl_label = "Import Component Animation"
-    filename_ext = ".fbx"
+    bl_label = "Import"
 
-    filter_glob: bpy.props.StringProperty(
-        default="*.fbx",
-        options={"HIDDEN"},
-        subtype="FILE_PATH",
-    ) # type: ignore
+    component_type: bpy.props.StringProperty(default="body") # type: ignore
 
-    component_type: bpy.props.StringProperty(
-        default="body",
-        options={"HIDDEN"},
-        subtype="FILE_PATH",
-    ) # type: ignore
-
-    round_sub_frames: bpy.props.BoolProperty(
-        name="Round Sub Frames",
-        default=True,
-        description=(
-            "Whether to round sub frames when importing the animation. This "
-            "ensure all keyframes are on whole frames with integer values"
-        )
-    ) # type: ignore
-
-    match_frame_rate: bpy.props.BoolProperty(
-        name="Match Frame Rate",
-        default=True,
-        description=(
-            "Whether to match the frame rate when importing the animation. This "
-            "will scale the animation curves to match the current scene frame rate"
-        )
-    ) # type: ignore
+    @property
+    def settings_title(self) -> str:
+        return f"{self.component_type.capitalize()} Animation Import Settings:"
 
     def execute(self, context):
         file_path = Path(bpy.path.abspath(self.filepath)) # type: ignore
@@ -327,24 +330,53 @@ class ImportComponentAnimation(bpy.types.Operator, importer.ImportAnimation):
         if self.component_type == 'head':
             head = utilities.get_active_head()
             if head:
-                head.import_action(file_path, is_face_board=False)  # type: ignore
+                head.import_action(
+                    file_path, 
+                    is_face_board=False,
+                    round_sub_frames=self.round_sub_frames,
+                    match_frame_rate=self.match_frame_rate,
+                    prefix_instance_name=self.prefix_instance_name,
+                    prefix_component_name=self.prefix_component_name
+                )  # type: ignore
             
         elif self.component_type == 'body':
             body = utilities.get_active_body()
             if body:
-                body.import_action(file_path)  # type: ignore
+                body.import_action(
+                    file_path, 
+                    round_sub_frames=self.round_sub_frames,
+                    match_frame_rate=self.match_frame_rate,
+                    prefix_instance_name=self.prefix_instance_name,
+                    prefix_component_name=self.prefix_component_name
+                )  # type: ignore
+
+        self.report({'INFO'}, f'Imported {self.component_type} animation from {file_path}')  # type: ignore
 
         return {'FINISHED'}
-    
-class BakeFaceBoardAnimation(bpy.types.Operator):
-    """Bakes the active face board action to the pose bones, shape key values, and texture logic mask values. Useful for rendering, simulations, etc. where rig logic evaluation is not available"""
-    bl_idname = "meta_human_dna.bake_animation"
-    bl_label = "Bake Animation"
 
+
+class BakeAnimationBase(bpy.types.Operator):
     action_name: bpy.props.StringProperty(
         name="Action Name",
         default="baked_action",
         description="The name of the action that will be created to store the baked animation data"
+    ) # type: ignore
+
+    prefix_instance_name: bpy.props.BoolProperty(
+        name="Prefix Instance Name",
+        default=True,
+        description="Prefixes the baked action name with the rig instance name. This helps avoid name collisions with other action names when multiple are in the same scene."
+    ) # type: ignore
+    prefix_component_name: bpy.props.BoolProperty(
+        name="Prefix Component Name",
+        default=True,
+        description="Prefixes the baked action name with the component name. This helps avoid name collisions with other components that might have the same action names."
+    ) # type: ignore
+
+    replace_action: bpy.props.BoolProperty(
+        name="Replace Action",
+        default=False,
+        description="Replaces the existing action with the baked action"
     ) # type: ignore
 
     start_frame: bpy.props.IntProperty(
@@ -407,25 +439,48 @@ class BakeFaceBoardAnimation(bpy.types.Operator):
     ) # type: ignore
 
     def invoke(self, context, event):
-        return context.window_manager.invoke_props_dialog(self, width = 250) # type: ignore
+        return context.window_manager.invoke_props_dialog(
+            self, 
+            title=self.dialog_title,
+            width=250
+        ) # type: ignore
+
+    @property
+    def dialog_title(self) -> str:
+        return self.bl_label
+    
+    def draw_extra_settings(self, layout, context):
+        pass
 
     def draw(self, context):
         if not self.layout:
             return
         
         row = self.layout.row()
-        row.prop(self, 'action_name', text="Name")
+        row.label(text="Naming:")
+        row = self.layout.row()
+        row.prop(self, 'action_name', text='')
+        row = self.layout.row()
+        row.prop(self, 'prefix_instance_name')
+        row = self.layout.row()
+        row.prop(self, 'prefix_component_name')
+        row = self.layout.row()
+        row.label(text="Settings:")
         row = self.layout.row()
         row.prop(self, 'start_frame')
         row.prop(self, 'end_frame')
         row = self.layout.row()
         row.prop(self, 'step')
         row = self.layout.row()
+        row.prop(self, 'replace_action')
+        row = self.layout.row()
         row.prop(self, 'shape_keys')
         row = self.layout.row()
         row.prop(self, 'masks')
         row = self.layout.row()
-        row.label(text="Bones:")
+        self.draw_extra_settings(self.layout, context)
+        row = self.layout.row()
+        row.label(text="Bone Transforms:")
         row = self.layout.row()
         row.prop(self, 'bone_location', text="Location")
         row = self.layout.row()
@@ -433,13 +488,19 @@ class BakeFaceBoardAnimation(bpy.types.Operator):
         row = self.layout.row()
         row.prop(self, 'bone_scale', text="Scale")
 
+    
+class BakeFaceBoardAnimation(BakeAnimationBase):
+    """Bakes the active face board action to the pose bones, shape key values, and texture logic mask values. Useful for rendering, simulations, etc. where rig logic evaluation is not available"""
+    bl_idname = "meta_human_dna.bake_face_board_animation"
+    bl_label = "Bake Face Board Animation"
+
     def execute(self, context):
         if self.start_frame > self.end_frame:
             self.report({'ERROR'}, 'The start frame must be less than the end frame')
             return {'CANCELLED'}
 
-        head = utilities.get_active_head()
-        if head and head.head_rig_object:
+        instance = callbacks.get_active_rig_logic()
+        if instance and instance.head_rig:
             channel_types = set()
             if self.bone_location:
                 channel_types.add('LOCATION')
@@ -448,9 +509,19 @@ class BakeFaceBoardAnimation(bpy.types.Operator):
             if self.bone_scale:
                 channel_types.add('SCALE')
 
-            utilities.bake_to_action(
-                armature_object=head.head_rig_object,
+            action_name = utilities.get_action_name(
+                instance=instance,
                 action_name=self.action_name,
+                component='head',
+                prefix_component_name=self.prefix_component_name,
+                prefix_instance_name=self.prefix_instance_name,
+            )
+
+            utilities.bake_face_board_to_action(
+                instance=instance,
+                armature_object=instance.head_rig,
+                action_name=action_name,
+                replace_action=self.replace_action,
                 start_frame=self.start_frame, # type: ignore
                 end_frame=self.end_frame, # type: ignore
                 step=self.step,
@@ -475,6 +546,122 @@ class BakeFaceBoardAnimation(bpy.types.Operator):
         if not instance.face_board.animation_data.action:
             return False
         return True
+    
+
+class BakeComponentAnimation(BakeAnimationBase):
+    """Bakes the active component action. This takes into account how the driver pose bones effect the rbf driven bones, shape key values, and texture logic mask values. Useful for rendering, simulations, etc. where rig logic evaluation is not available"""
+    bl_idname = "meta_human_dna.bake_component_animation"
+    bl_label = "Bake Component Animation"
+
+    component_type: bpy.props.StringProperty(
+        default="body",
+        options={"HIDDEN"},
+        subtype="FILE_PATH",
+    ) # type: ignore
+
+    driver_bones: bpy.props.BoolProperty(
+        name="Driver Bones",
+        default=True,
+        description="Bakes the values of the driver bones over time"
+    ) # type: ignore
+    driven_bones: bpy.props.BoolProperty(
+        name="Driven Bones",
+        default=True,
+        description="Bakes the values of the RBF driven bones over time"
+    ) # type: ignore
+    twist_bones: bpy.props.BoolProperty(
+        name="Twist Bones",
+        default=True,
+        description="Bakes the values of the twist bones over time"
+    ) # type: ignore
+    swing_bones: bpy.props.BoolProperty(
+        name="Swing Bones",
+        default=True,
+        description="Bakes the values of the swing bones over time"
+    ) # type: ignore
+    other_bones: bpy.props.BoolProperty(
+        name="Other Bones",
+        default=True,
+        description="Bakes the values of other bones on the rig that are not explicitly categorized as driver, driven, twist, or swing bones"
+    ) # type: ignore
+
+    def execute(self, context):
+        if self.start_frame > self.end_frame:
+            self.report({'ERROR'}, 'The start frame must be less than the end frame')
+            return {'CANCELLED'}
+
+        instance = callbacks.get_active_rig_logic()
+        if instance and instance.body_rig and self.component_type == 'body':
+            channel_types = set()
+            if self.bone_location:
+                channel_types.add('LOCATION')
+            if self.bone_rotation:
+                channel_types.add('ROTATION')
+            if self.bone_scale:
+                channel_types.add('SCALE')
+
+            action_name = utilities.get_action_name(
+                instance=instance,
+                action_name=self.action_name,
+                component=self.component_type,
+                prefix_component_name=self.prefix_component_name,
+                prefix_instance_name=self.prefix_instance_name,
+            )
+
+            utilities.bake_body_to_action(
+                instance=instance,
+                armature_object=instance.body_rig,
+                action_name=action_name,
+                replace_action=self.replace_action,
+                start_frame=self.start_frame, # type: ignore
+                end_frame=self.end_frame, # type: ignore
+                step=self.step,
+                channel_types=channel_types,
+                clean_curves=self.clean_curves,
+                masks=self.masks,
+                shape_keys=self.shape_keys, 
+                driver_bones=self.driver_bones,
+                driven_bones=self.driven_bones,
+                twist_bones=self.twist_bones,
+                swing_bones=self.swing_bones,
+                other_bones=self.other_bones
+            )
+        return {'FINISHED'}
+    
+    @property
+    def dialog_title(self) -> str:
+        return f'Bake {self.component_type.capitalize()} Animation'
+    
+    def draw_extra_settings(self, layout, context):
+        if self.component_type == 'body':
+            row = layout.row()
+            row.label(text="Bone Types:")
+            row = layout.row()
+            row.prop(self, 'driver_bones')
+            row = layout.row()
+            row.prop(self, 'driven_bones')
+            row = layout.row()
+            row.prop(self, 'twist_bones')
+            row = layout.row()
+            row.prop(self, 'swing_bones')
+    
+    @classmethod
+    def poll(cls, context):
+        instance = callbacks.get_active_rig_logic()
+
+        if not instance:
+            return False
+        
+        if context.window_manager.meta_human_dna.current_component_type == 'body':
+            if not instance.body_rig:
+                return False
+            if not instance.body_rig.animation_data:
+                return False
+            if not instance.body_rig.animation_data.action:
+                return False
+            return True
+        
+        return False
 
 
 class ImportMetahumanDna(bpy.types.Operator, importer.ImportAsset, MetahumanDnaImportProperties):
@@ -953,6 +1140,14 @@ class SendToMetaHumanCreator(bpy.types.Operator):
     def execute(self, context):
         instance = callbacks.get_active_rig_logic()
         if instance:
+            # store the current auto evaluate settings
+            auto_evaluate_head = instance.auto_evaluate_head
+            auto_evaluate_body = instance.auto_evaluate_body
+
+            # disable auto evaluate while we are exporting
+            instance.auto_evaluate_head = False
+            instance.auto_evaluate_body = False
+
             current_context = utilities.get_current_context()
 
             for attribute_name in ['head_mesh', 'head_rig', 'body_mesh', 'body_rig']:
@@ -1009,7 +1204,11 @@ class SendToMetaHumanCreator(bpy.types.Operator):
                 bpy.ops.meta_human_dna.force_evaluate() # type: ignore
 
             utilities.set_context(current_context)
-            
+
+            # restore the auto evaluate settings
+            instance.auto_evaluate_head = auto_evaluate_head
+            instance.auto_evaluate_body = auto_evaluate_body
+
         return {'FINISHED'}
 
 class SendToUnreal(bpy.types.Operator):
@@ -1354,6 +1553,31 @@ class ShapeKeyOperatorBase(bpy.types.Operator):
         return shape_key_index, key_block, channel_index, mesh_object
     
 
+class RBFEditorOperatorBase(bpy.types.Operator):
+    solver_index: bpy.props.IntProperty(default=0) # type: ignore
+    pose_index: bpy.props.IntProperty(default=0) # type: ignore
+    driver_index: bpy.props.IntProperty(default=0) # type: ignore
+    driven_index: bpy.props.IntProperty(default=0) # type: ignore
+
+    def validate(self, context, instance) -> tuple[bool, str]:
+        return True, ""
+    
+    def execute(self, context):
+        instance = callbacks.get_active_rig_logic()
+        if instance and instance.body_rig:
+            result, message = self.validate(context, instance)
+            if not result:
+                self.report({'ERROR'}, message)
+                return {'CANCELLED'}
+            
+            self.run(instance)
+
+        return {'FINISHED'}
+    
+    def run(self, instance):
+        pass
+
+
 class MetaHumanDnaReportError(ShapeKeyOperatorBase):
     """Reports and error message to the user with a optional fix"""
     bl_idname = "meta_human_dna.report_error"
@@ -1566,6 +1790,421 @@ class ReImportThisShapeKey(ShapeKeyOperatorBase):
 
             utilities.set_context(current_context)
         return {'FINISHED'}
+    
+
+class AddRBFSolver(RBFEditorOperatorBase):
+    """Add a new RBF Solver"""
+    bl_idname = "meta_human_dna.add_rbf_solver"
+    bl_label = "Add RBF Solver"
+
+    def run(self, instance):
+        pass
+    
+
+class RemoveRBFSolver(RBFEditorOperatorBase):
+    """Remove the selected RBF Solver"""
+    bl_idname = "meta_human_dna.remove_rbf_solver"
+    bl_label = "Remove RBF Solver"
+
+    def run(self, instance):
+        pass
+    
+
+class EvaluateRBFSolvers(RBFEditorOperatorBase):
+    """Evaluate the RBF Solvers"""
+    bl_idname = "meta_human_dna.evaluate_rbf_solvers"
+    bl_label = "Evaluate RBF Solvers"
+
+    def run(self, instance):
+        instance.evaluate(component='body')
+
+
+class RevertRBFSolver(RBFEditorOperatorBase):
+    """Revert RBF solver back to the original DNA."""
+    bl_idname = "meta_human_dna.revert_rbf_solver"
+    bl_label = "Revert RBF Solver"
+
+    def run(self, instance):
+        utilities.reset_pose(instance.body_rig)
+
+        instance.editing_rbf_solver = False
+        instance.auto_evaluate_body = True
+        bpy.ops.meta_human_dna.force_evaluate() # type: ignore
+
+class EditRBFSolver(RBFEditorOperatorBase):
+    """Switch to Editing mode for the selected RBF solver. Changes will not take effect until committed to the .dna file."""
+    bl_idname = "meta_human_dna.edit_rbf_solver"
+    bl_label = "Edit RBF Solver"
+
+    @classmethod
+    def poll(cls, context):
+        instance = callbacks.get_active_rig_logic()
+        if not instance or not instance.body_rig:
+            return False
+        
+        if not instance.editing_rbf_solver:
+            return True
+        
+        return False
+
+    def run(self, instance):
+        instance.editing_rbf_solver = True
+        instance.auto_evaluate_body = False
+        instance.body_rig.hide_set(False)
+        utilities.switch_to_pose_mode(instance.body_rig)
+            
+
+class CommitRBFSolverChanges(RBFEditorOperatorBase):
+    """Commit the current changes for the selected RBF solver to the .dna file"""
+    bl_idname = "meta_human_dna.commit_rbf_solver_changes"
+    bl_label = "Commit RBF Solver Changes"
+
+    @classmethod
+    def poll(cls, context):
+        instance = callbacks.get_active_rig_logic()
+        if instance is None:
+            return False
+        
+        if instance.editing_rbf_solver:
+            return True
+        
+        return False
+    
+    def validate(self, context, instance) -> tuple[bool, str]:
+        if not utilities.dependencies_are_valid():
+            return False, "Dependencies are not valid. Ensure the core dependencies are installed."
+
+        if not instance.body_rig:
+            return False, "No body rig found. Please assign a body rig."
+        if not instance.body_dna_file_path:
+            return False, "No body .dna file. Please assign a body .dna file."
+        if not Path(bpy.path.abspath(instance.body_dna_file_path)).exists():
+            return False, "Body .dna file does not exist. Please check the file path."
+
+        return True, ""
+
+    def run(self, instance):
+        import meta_human_dna_core
+
+        reader = get_dna_reader(file_path=instance.body_dna_file_path)
+        writer = get_dna_writer(file_path=instance.body_dna_file_path)
+        data = utilities.collection_to_list(instance.rbf_solver_list)
+
+        # destroy the reader and writer instances to release file locks and
+        # any memory they are using
+        instance.destroy()
+
+        meta_human_dna_core.commit_rbf_data_to_dna(
+            reader=reader,
+            writer=writer,
+            data=data
+        )
+        logger.info(f'DNA exported successfully to: "{instance.body_dna_file_path}"')
+        
+        # turn off editing mode and re-enable auto evaluation
+        instance.editing_rbf_solver = False
+        instance.auto_evaluate_body = True
+        # re-initialize and evaluate the body rig
+        instance.evaluate(component='body')
+
+
+class RBFPoseOperatorBase(RBFEditorOperatorBase):    
+    def add_pose(
+            self, 
+            instance, 
+            pose_name: str,
+            driven_bones: list[bpy.types.PoseBone],
+            from_pose = None
+        ):
+        solver = instance.rbf_solver_list[self.solver_index]
+        new_pose_index = len(solver.poses)
+        pose = solver.poses.add()
+        
+        pose.solver_index = self.solver_index
+        pose.pose_index = new_pose_index
+        pose.name = pose_name
+        
+        # copy the values from an existing pose if provided
+        if from_pose:
+            pose.joint_group_index = from_pose.joint_group_index
+            pose.target_enable = from_pose.target_enable
+            pose.scale_factor = from_pose.scale_factor
+
+        driver_bone_name = solver.name.replace(RBF_SOLVER_POSTFIX, '')
+        driver_bone = instance.body_rig.pose.bones.get(driver_bone_name)
+        if not driver_bone:
+            return
+        
+        driver = pose.drivers.add()
+        utilities.set_driver_bone_data(
+            instance=instance,
+            pose=pose,
+            driver=driver,
+            pose_bone=driver_bone,
+            new=True
+        )
+
+        for pose_bone in driven_bones:
+            driven = pose.driven.add()            
+            utilities.set_driven_bone_data(
+                instance=instance,
+                pose=pose,
+                driven=driven,
+                pose_bone=pose_bone,
+                new=True
+            )
+
+        # set the active pose to the new pose
+        solver.poses_active_index = new_pose_index # type: ignore
+
+        return pose
+
+
+class AddRBFPose(RBFPoseOperatorBase):
+    """Add a new RBF Pose"""
+    bl_idname = "meta_human_dna.add_rbf_pose"
+    bl_label = "Add RBF Pose"
+
+    new_pose_name: bpy.props.StringProperty(
+        default="default",
+        description="The name of the new RBF Pose",
+        get=callbacks.get_new_pose_name,
+        set=callbacks.set_new_pose_name
+    ) # type: ignore
+
+    def validate(self, context, instance) -> tuple[bool, str]:
+        if not context.selected_pose_bones:
+            return False, "No pose bones selected. Please select at least one driver bone in pose mode."
+        
+        if not instance.body_initialized:
+            instance.body_initialize()
+
+        for pose_bone in context.selected_pose_bones:
+            if pose_bone.name in instance.body_driver_bone_names:
+                return False, f'The selected bone "{pose_bone.name}" is assigned as a driver bone. Please select other bones.'
+            elif pose_bone.name in instance.body_swing_bone_names:
+                return False, f'The selected bone "{pose_bone.name}" is assigned as a swing bone. Please select other bones.'
+            elif pose_bone.name in instance.body_twist_bone_names:
+                return False, f'The selected bone "{pose_bone.name}" is assigned as a twist bone. Please select other bones.'
+        
+        solver = instance.rbf_solver_list[instance.rbf_solver_list_active_index]
+        for pose in solver.poses:
+            if pose.name == self.new_pose_name:
+                return False, f'A pose with the name "{self.new_pose_name}" already exists. Use a different name.'
+            
+        driver_name_name = solver.name.replace(RBF_SOLVER_POSTFIX, '')
+        if not instance.body_rig.pose.bones.get(driver_name_name):
+            return False, f'The driver bone "{driver_name_name}" for the solver "{solver.name}" is not found in the armature. Please ensure the bone exists.'
+        
+        return True, ""
+
+    def run(self, instance):
+        solver = instance.rbf_solver_list[instance.rbf_solver_list_active_index]
+        new_pose_index = len(solver.poses)
+        self.add_pose(
+            instance=instance,
+            pose_name=self.new_pose_name if self.new_pose_name else f"Pose{new_pose_index}",
+            driven_bones=bpy.context.selected_pose_bones.copy()  # type: ignore
+        )
+
+    def invoke(self, context, event):
+        return context.window_manager.invoke_props_dialog(self, width = 200) # type: ignore
+    
+    def draw(self, context):
+        if not self.layout:
+            return
+        
+        row = self.layout.row()
+        row.label(text='Pose Name:')
+        row = self.layout.row()
+        row.prop(self, "new_pose_name", text="")
+        row = self.layout.row()
+        row.label(text="Adding bones:")
+        box = self.layout.box()
+        for pose_bone in context.selected_pose_bones:
+            row = box.row()
+            row.label(text=pose_bone.name, icon='BONE_DATA')
+    
+    @classmethod
+    def poll(cls, context):
+        return bool(context.selected_pose_bones)
+    
+
+class DuplicateRBFPose(RBFPoseOperatorBase):
+    """Duplicate the selected RBF Pose"""
+    bl_idname = "meta_human_dna.duplicate_rbf_pose"
+    bl_label = "Duplicate RBF Pose"
+
+    def run(self, instance):
+        solver = instance.rbf_solver_list[self.solver_index]
+        pose = solver.poses[self.pose_index]
+
+        # Generate a unique name for the duplicated pose
+        count_same_name = 1
+        for existing_pose in solver.poses:
+            if existing_pose.name.startswith(pose.name):
+                count_same_name += 1
+        new_pose_name = f"{pose.name}_{count_same_name}"
+
+        # Copy the driven bone names from the original pose
+        driven_bones = []
+        for driven in pose.driven:
+            pose_bone = instance.body_rig.pose.bones.get(driven.name)
+            if pose_bone:
+                driven_bones.append(pose_bone)
+
+        self.add_pose(
+            instance=instance,
+            pose_name=new_pose_name,
+            driven_bones=driven_bones,
+            from_pose=pose,
+        )
+
+
+class UpdateRBFPose(RBFEditorOperatorBase):
+    """Update the selected RBF Pose. This includes both the driver and driven bone transforms for the current pose"""
+    bl_idname = "meta_human_dna.update_rbf_pose"
+    bl_label = "Update RBF Pose"
+
+    def run(self, instance):      
+        # ensure the body is initialized
+        if not instance.body_initialized:
+            instance.body_initialize(update_rbf_solver_list=False)
+
+        solver = instance.rbf_solver_list[self.solver_index]
+        pose = solver.poses[self.pose_index]
+
+        # Update all the driver bone data for the pose
+        for driver in pose.drivers:
+            driver_bone = instance.body_rig.pose.bones.get(driver.name)
+            if driver_bone:
+                utilities.set_driver_bone_data(
+                    instance=instance,
+                    pose=pose,
+                    driver=driver,
+                    pose_bone=driver_bone
+                )
+            else:
+                self.report({'ERROR'}, (
+                    f'Driver bone "{driver.name}" was not found in armature "{instance.body_rig.name}" '
+                    f'when updating RBF Pose "{pose.name}". Please ensure the bone exists or delete '
+                    f'this pose and recreate it.'
+                ))
+        
+        # Update all the driven bone data for the pose
+        for driven in pose.driven:
+            driven_pose_bone = instance.body_rig.pose.bones.get(driven.name)
+            if driven_pose_bone:
+                utilities.set_driven_bone_data(
+                    instance=instance,
+                    pose=pose,
+                    driven=driven,
+                    pose_bone=driven_pose_bone
+                )
+            else:
+                logger.warning((
+                    f'Driven bone "{driven.name}" was not found in armature when '
+                    f'updating RBF Pose "{pose.name}". It will be deleted from '
+                    'the pose when this data is committed to the dna.'
+                ))
+    
+
+class RemoveRBFPose(RBFEditorOperatorBase):
+    """Remove the selected RBF Pose"""
+    bl_idname = "meta_human_dna.remove_rbf_pose"
+    bl_label = "Remove RBF Pose"
+
+    def run(self, instance):
+        solver = instance.rbf_solver_list[instance.rbf_solver_list_active_index]
+        solver.poses.remove(solver.poses_active_index)
+        to_index = min(solver.poses_active_index, len(solver.poses) - 1)
+        solver.poses_active_index = to_index # type: ignore
+
+
+class AddRBFDriver(RBFEditorOperatorBase):
+    """Add a new RBF Driver bone"""
+    bl_idname = "meta_human_dna.add_rbf_driver"
+    bl_label = "Add RBF Driver"
+
+    def run(self, instance):
+        pass
+
+
+class RemoveRBFDriver(RBFEditorOperatorBase):
+    """Remove the selected RBF Driver bone"""
+    bl_idname = "meta_human_dna.remove_rbf_driver"
+    bl_label = "Remove RBF Driver"
+
+    def run(self, instance):
+        pass
+
+class AddRBFDriven(RBFEditorOperatorBase):
+    """Add a new RBF Driven bone"""
+    bl_idname = "meta_human_dna.add_rbf_driven"
+    bl_label = "Add RBF Driven Bone"
+
+    @classmethod
+    def poll(cls, context):
+        instance = callbacks.get_active_rig_logic()        
+        if instance and instance.body_rig and context.selected_pose_bones:
+            return True
+        
+        return False
+
+    def validate(self, context, instance) -> tuple[bool, str]:
+        if not context.selected_pose_bones:
+            return False, "No pose bones selected. Please select at least one driven bone in pose mode."
+
+        return True, ""
+
+    def run(self, instance):
+        solver = instance.rbf_solver_list[self.solver_index]
+        pose = solver.poses[self.pose_index]
+
+        selected_pose_bones = bpy.context.selected_pose_bones.copy()  # type: ignore
+
+        for pose_bone in selected_pose_bones:
+            if pose_bone.name not in [d.name for d in pose.driven]:
+                driven = pose.driven.add()
+                utilities.set_driven_bone_data(
+                    instance=instance,
+                    pose=pose,
+                    driven=driven,
+                    pose_bone=pose_bone,
+                    new=True
+                )
+
+        # set the active driven to the last one added
+        pose.driven_active_index = len(pose.driven) - 1
+
+class RemoveRBFDriven(RBFEditorOperatorBase):
+    """Remove the selected RBF Driven bone"""
+    bl_idname = "meta_human_dna.remove_rbf_driven"
+    bl_label = "Remove RBF Driven Bone"
+
+    def run(self, instance):
+        pass
+
+class SelectAllRBFDriven(RBFEditorOperatorBase):
+    """Select all RBF Driven bones for the current pose"""
+    bl_idname = "meta_human_dna.select_all_rbf_driven_for_pose"
+    bl_label = "Select All RBF Driven Bones for Pose"
+
+    def run(self, instance):
+        solver = instance.rbf_solver_list[self.solver_index]
+        pose = solver.poses[self.pose_index]
+
+        # switch to pose mode
+        instance.body_rig.hide_set(False)
+        utilities.switch_to_pose_mode(instance.body_rig)
+
+        # select all driven bones for the pose
+        driven_bone_names = [driven.name for driven in pose.driven]
+        for pose_bone in instance.body_rig.pose.bones:
+            if pose_bone.name in driven_bone_names:
+                pose_bone.bone.select = True
+            else:
+                pose_bone.bone.select = False
     
 class RefreshMaterialSlotNames(bpy.types.Operator):
     """Refresh the material slot names by re-reading them from the meshes in the output list"""
