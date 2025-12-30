@@ -44,12 +44,13 @@ def get_dna_import_property_group_base_class():
 class BlendFileMetaHumanCollection(bpy.types.PropertyGroup):
     include: bpy.props.BoolProperty(
         default=True,
-        description='Whether to include this data in the append or link operation',
+        description='Whether to include this MetaHuman data in the append or link operation. Note: you can not append or link rig instances that have the same name as another in the current scene. Names must be unique.',
     ) # type: ignore
     name: bpy.props.StringProperty(
         default='',
         description='The name of the MetaHuman',
     ) # type: ignore
+    enabled: bpy.props.BoolProperty(default=True) # type: ignore
 
 class ExtraDnaFolder(bpy.types.PropertyGroup):
     folder_path: bpy.props.StringProperty(
@@ -148,6 +149,7 @@ class MetahumanWindowMangerProperties(bpy.types.PropertyGroup, MetahumanDnaImpor
     progress_description: bpy.props.StringProperty(default='') # type: ignore
     progress_mesh_name: bpy.props.StringProperty(default='') # type: ignore
     evaluate_dependency_graph: bpy.props.BoolProperty(default=True) # type: ignore
+    is_undoing: bpy.props.BoolProperty(default=False) # type: ignore
 
     face_pose_previews: bpy.props.EnumProperty( # type: ignore
         name="Face Poses",
