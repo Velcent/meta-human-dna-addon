@@ -4,7 +4,7 @@ import math
 import queue
 import shutil
 import logging
-from mathutils import Vector, Matrix, Euler
+from mathutils import Vector, Matrix
 from pathlib import Path
 from datetime import datetime, timedelta
 from .ui import importer, callbacks
@@ -31,7 +31,6 @@ from .constants import (
     HEAD_TEXTURE_LOGIC_NODE_LABEL,
     SHAPE_KEY_BASIS_NAME,
     FACE_BOARD_NAME,
-    BONE_DELTA_THRESHOLD,
     RBF_SOLVER_POSTFIX
 )
 
@@ -136,6 +135,7 @@ class AppendOrLinkMetaHuman(bpy.types.Operator, importer.LinkAppendMetaHumanImpo
         default='APPEND'
     ) # type: ignore
     meta_human_list: bpy.props.CollectionProperty(type=BlendFileMetaHumanCollection) # type: ignore
+    meta_human_names: bpy.props.StringProperty(default="") # type: ignore
 
     def execute(self, context):
         if not self.filepath: # type: ignore
@@ -149,7 +149,14 @@ class AppendOrLinkMetaHuman(bpy.types.Operator, importer.LinkAppendMetaHumanImpo
         if bpy.data.filepath == self.filepath: # type: ignore
             self.report({'ERROR'}, 'You cannot import a MetaHuman from the current .blend file')
             return {'CANCELLED'}
-
+        
+        # this is for headless imports and automated tests
+        if self.meta_human_names:
+            self.meta_human_list.clear()
+            for name in self.meta_human_names.split(','):
+                item = self.meta_human_list.add()
+                item.name = name
+                item.include = True
 
         # track the current control objects
         current_control_objects = []
@@ -439,11 +446,11 @@ class BakeAnimationBase(bpy.types.Operator):
     ) # type: ignore
 
     def invoke(self, context, event):
-        return context.window_manager.invoke_props_dialog(
+        return context.window_manager.invoke_props_dialog( # type: ignore
             self, 
             title=self.dialog_title,
             width=250
-        ) # type: ignore
+        )
 
     @property
     def dialog_title(self) -> str:
@@ -654,7 +661,7 @@ class BakeComponentAnimation(BakeAnimationBase):
         if not instance:
             return False
         
-        if context.window_manager.meta_human_dna.current_component_type == 'body':
+        if context.window_manager.meta_human_dna.current_component_type == 'body': # type: ignore
             if not instance.body_rig:
                 return False
             if not instance.body_rig.animation_data:
@@ -1853,7 +1860,7 @@ class EditRBFSolver(RBFEditorOperatorBase):
         instance.editing_rbf_solver = True
         instance.auto_evaluate_body = False
         instance.body_rig.hide_set(False)
-        utilities.switch_to_pose_mode(instance.body_rig)
+        utilities.switch_to_pose_mode(instance.body_rig) # type: ignore
             
 
 class CommitRBFSolverChanges(RBFEditorOperatorBase):
@@ -2198,7 +2205,7 @@ class SelectAllRBFDriven(RBFEditorOperatorBase):
 
         # switch to pose mode
         instance.body_rig.hide_set(False)
-        utilities.switch_to_pose_mode(instance.body_rig)
+        utilities.switch_to_pose_mode(instance.body_rig) # type: ignore
 
         # select all driven bones for the pose
         driven_bone_names = [driven.name for driven in pose.driven]
@@ -2527,28 +2534,53 @@ class UILIST_RIG_LOGIC_OT_entry_remove(GenericUIListOperator, bpy.types.Operator
     bl_idname = "meta_human_dna.rig_logic_instance_entry_remove"
     bl_label = "Remove Selected Entry"
 
+    delete_associated_data: bpy.props.BoolProperty(
+        name="Delete associated data",
+        description="Delete all associated objects and collections linked to this rig instance",
+        default=True
+    ) # type: ignore
+
     def execute(self, context):
         my_list = context.scene.meta_human_dna.rig_logic_instance_list # type: ignore
 
-        instance = context.scene.meta_human_dna.rig_logic_instance_list[self.active_index] # type: ignore
-        for component_type in ['body', 'head']:
-            for item in getattr(instance, f'output_{component_type}_item_list'):
-                if item.scene_object:
-                    bpy.data.objects.remove(item.scene_object, do_unlink=True)
-                if item.image_object:
-                    bpy.data.images.remove(item.image_object, do_unlink=True)
+        if self.delete_associated_data:
+            instance = context.scene.meta_human_dna.rig_logic_instance_list[self.active_index] # type: ignore
+            for component_type in ['body', 'head']:
+                for item in getattr(instance, f'output_{component_type}_item_list'):
+                    if item.scene_object:
+                        bpy.data.objects.remove(item.scene_object, do_unlink=True)
+                    if item.image_object:
+                        bpy.data.images.remove(item.image_object, do_unlink=True)
 
-            # remove the collections for the component type
-            for collection_name in [instance.name] + [f'{instance.name}_{component_type}_lod{i}' for i in range(NUMBER_OF_HEAD_LODS)]:
-                collection = bpy.data.collections.get(collection_name)
-                if collection:
-                    bpy.data.collections.remove(collection, do_unlink=True)
+                # remove the collections for the component type
+                for collection_name in [instance.name] + [f'{instance.name}_{component_type}_lod{i}' for i in range(NUMBER_OF_HEAD_LODS)]:
+                    collection = bpy.data.collections.get(collection_name)
+                    if collection:
+                        bpy.data.collections.remove(collection, do_unlink=True)
 
         my_list.remove(self.active_index)
         to_index = min(self.active_index, len(my_list) - 1)
         context.scene.meta_human_dna.rig_logic_instance_list_active_index = to_index # type: ignore
         return {'FINISHED'}
 
+    def invoke(self, context, event):
+        instance = context.scene.meta_human_dna.rig_logic_instance_list[self.active_index] # type: ignore
+        self.instance_name = instance.name if instance else "this instance"
+        return context.window_manager.invoke_props_dialog( # type: ignore
+            self, 
+            title=f"Remove: {self.instance_name}",
+            confirm_text="Remove",
+            width=400
+        )
+    
+    def draw(self, context):
+        if not self.layout:
+            return
+        
+        row = self.layout.row()
+        row.label(text=f"Are you sure you want to remove the '{self.instance_name}' rig instance?", icon='ERROR')
+        row = self.layout.row()
+        row.prop(self, "delete_associated_data")
 
 class UILIST_RIG_LOGIC_OT_entry_add(GenericUIListOperator, bpy.types.Operator):
     """Add an entry to the list after the current active item"""

@@ -1,12 +1,12 @@
-## Major Changes
-* Evaluation support for RBF Solvers [#168](https://github.com/poly-hammer/meta-human-dna-addon/issues/168)
-
 ## Minor Changes
-* Calibrate Vertex Groups [#200](https://github.com/poly-hammer/meta-human-dna-addon/issues/200)
-* Option to preserve Face Board animation when baking [#93](https://github.com/poly-hammer/meta-human-dna-addon/issues/93)
+* Added confirm option when deleting rig instances with option to delete linked data [#202](https://github.com/poly-hammer/meta-human-dna-addon/issues/202)
 
 ## Patch Changes
-* Fixed Append/Link operator [#206](https://github.com/poly-hammer/meta-human-dna-addon/issues/206)
+* Fixed Blender 5.0 shape key imports [#229](https://github.com/poly-hammer/meta-human-dna-addon/issues/229)
+* Fixed Blender 5.0 action baking [#229](https://github.com/poly-hammer/meta-human-dna-addon/issues/229)
+* Fixed animation import bugs with root motion [#233](https://github.com/poly-hammer/meta-human-dna-addon/issues/233)
+* Fixed Crashes with Shader Edits and Undo/Redo [#237](https://github.com/poly-hammer/meta-human-dna-addon/issues/237)
+* Added validation for when user tries to append/link rig instance with the same name [#203](https://github.com/poly-hammer/meta-human-dna-addon/issues/203)
 
 
 > [!WARNING]  
@@ -14,7 +14,7 @@
 
 ## Tests Passing On
 * Metahuman Creator Version `6.0.0`
-* Blender `4.5` (installed from blender.org)
-* Unreal `5.6`
+* Blender `4.5`, `5.0` (installed from blender.org)
+* Unreal `5.6`, `5.7`
 > [!NOTE]  
 > Due to all the changes in Unreal 5.6, MetaHumans v6, and the addon still being in Beta, there is no backward support for earlier versions. Please use an older addon release if needed.

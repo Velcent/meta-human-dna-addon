@@ -36,6 +36,11 @@ def rig_logic_listener(
     # this condition prevents constant evaluation
     if not bpy.context.window_manager.meta_human_dna.evaluate_dependency_graph: # type: ignore
         return
+    
+    # this condition prevents evaluation after an undo operation
+    if bpy.context.window_manager.meta_human_dna.is_undoing: # type: ignore
+        bpy.context.window_manager.meta_human_dna.is_undoing = False # type: ignore
+        return
 
     # track the minimal set of instances that need to be updated and their components
     instance_updates = set()
@@ -144,8 +149,16 @@ def rig_logic_listener(
                             else:
                                 instance_updates.add((instance, 'body'))
 
-    # apply the updates to the instances
+    # reduce redundant updates if 'all' components are being updated anyway, no need to update head/body again separately
+    final_instance_updates = set()
     for instance, component in instance_updates:
+        if (instance, 'all') in instance_updates:
+            final_instance_updates.add((instance, 'all'))
+        else:
+            final_instance_updates.add((instance, component))
+
+    # apply the updates to the instances
+    for instance, component in final_instance_updates:
         instance.evaluate(component=component, dependency_graph=dependency_graph)
 
 def frame_change_handler(*args):
@@ -375,8 +388,7 @@ class RigLogicInstance(bpy.types.PropertyGroup):
     name: bpy.props.StringProperty(
         default='my_metahuman',
         description='The name associated with this Rig Logic instance. This is also the unique identifier for all data associated with the metahuman head',
-        set=callbacks.set_instance_name,
-        get=callbacks.get_instance_name
+        update=callbacks.update_instance_name
     ) # type: ignore
     auto_evaluate: bpy.props.BoolProperty(
         default=True,
@@ -752,6 +764,7 @@ class RigLogicInstance(bpy.types.PropertyGroup):
     unreal_material_slot_to_instance_mapping_active_index: bpy.props.IntProperty() # type: ignore
 
     # ----- Internal Properties -----
+    old_name: bpy.props.StringProperty(default='') # type: ignore
     shape_key_list: bpy.props.CollectionProperty(type=ShapeKeyData) # type: ignore
     shape_key_list_active_index: bpy.props.IntProperty() # type: ignore
 
@@ -876,18 +889,10 @@ class RigLogicInstance(bpy.types.PropertyGroup):
     @property
     def head_texture_masks_node(self) -> bpy.types.ShaderNodeGroup | None:
         # first check if the texture masks node is set
-        texture_masks_node = self.data.get(f'{self.name}_head_texture_masks_node')
-        if texture_masks_node is False:
+        if not self.head_material:
             return None
-        elif texture_masks_node is not None:
-            return texture_masks_node
-        else:
-            node = callbacks.get_head_texture_logic_node(self.head_material)
-            if node:
-                self.data[f'{self.name}_head_texture_masks_node'] = node
-                return self.data[f'{self.name}_head_texture_masks_node']
-
-        self.data[f'{self.name}_head_texture_masks_node'] = False
+    
+        return callbacks.get_head_texture_logic_node(self.head_material)
 
     @property
     def head_initialized(self) -> bool:
@@ -1035,8 +1040,8 @@ class RigLogicInstance(bpy.types.PropertyGroup):
             return rest_pose
         
         # make sure the rig bone are using the correct rotation mode
-        if self.head_rig and self.head_rig.pose:
-            for pose_bone in self.head_rig.pose.bones:
+        if self.evaluated_head_rig and self.evaluated_head_rig.pose:
+            for pose_bone in self.evaluated_head_rig.pose.bones:
                 if pose_bone.name in self.head_driver_bone_names:
                     pose_bone.rotation_mode = "QUATERNION"
                 else:
@@ -1095,8 +1100,8 @@ class RigLogicInstance(bpy.types.PropertyGroup):
             return rest_pose
         
         # make sure the rig bone are using the correct rotation mode
-        if self.body_rig and self.body_rig.pose:
-            for pose_bone in self.body_rig.pose.bones:
+        if self.evaluated_body_rig and self.evaluated_body_rig.pose:
+            for pose_bone in self.evaluated_body_rig.pose.bones:
                 # make sure the body bones are using the correct rotation mode
                 if pose_bone.name in self.body_driver_bone_names:
                     pose_bone.rotation_mode = "QUATERNION"
@@ -1583,8 +1588,9 @@ class RigLogicInstance(bpy.types.PropertyGroup):
         if not self.head_material or not self.head_dna_reader:
             return []
 
+        head_texture_masks_node = self.head_texture_masks_node
         # if the texture masks node is not set, we can't update the texture masks
-        if not self.head_texture_masks_node:
+        if not head_texture_masks_node:
             logger.warning(f'The texture masks node was not found on the material "{self.head_material.name}"')
             return []
         
@@ -1595,7 +1601,7 @@ class RigLogicInstance(bpy.types.PropertyGroup):
             name = self.head_dna_reader.getAnimatedMapName(index)
             slider_name = f"{name.split('.')[0].split('_')[1].lower().replace('cm', 'wm')}.{name.split('.')[-1]}_msk"
             
-            mask_slider = self.head_texture_masks_node.inputs.get(slider_name)
+            mask_slider = head_texture_masks_node.inputs.get(slider_name)
             if mask_slider:
                 mask_slider.default_value = value # type: ignore
                 texture_mask_values.append((slider_name, value))
@@ -1658,7 +1664,11 @@ class RigLogicInstance(bpy.types.PropertyGroup):
 
                 # update the bone matrix
                 modified_matrix = Matrix.LocRotScale(location, rotation, scale)
-                pose_bone.matrix_basis = rest_to_parent_matrix.inverted() @ modified_matrix
+                try:
+                    pose_bone.matrix_basis = rest_to_parent_matrix.inverted() @ modified_matrix
+                except ValueError as error:
+                    logger.warning(f'Error updating bone "{name}" matrix: {error}')
+                    continue
 
                 # if the bone is not a leaf bone, we need to update the rotation again
                 if pose_bone.children:
@@ -1724,10 +1734,10 @@ class RigLogicInstance(bpy.types.PropertyGroup):
         self.update_head_bone_transforms()
 
     def reset_raw_control_values(self):
-        bpy.context.window_manager.meta_human_dna.evaluate_dependency_graph = False
+        bpy.context.window_manager.meta_human_dna.evaluate_dependency_graph = False # type: ignore
         self.reset_body_raw_control_values()
         self.reset_head_raw_control_values()
-        bpy.context.window_manager.meta_human_dna.evaluate_dependency_graph = True
+        bpy.context.window_manager.meta_human_dna.evaluate_dependency_graph = True # type: ignore
 
     def update_body_raw_control_values(self, override_values: dict[str, dict[str, float]] | None = None):
         # skip if the body rig is not set
@@ -1836,7 +1846,11 @@ class RigLogicInstance(bpy.types.PropertyGroup):
 
                 # update the bone matrix
                 modified_matrix = Matrix.LocRotScale(location, rotation, scale)
-                pose_bone.matrix_basis = rest_to_parent_matrix.inverted() @ modified_matrix
+                try:
+                    pose_bone.matrix_basis = rest_to_parent_matrix.inverted() @ modified_matrix
+                except ValueError as error:
+                    logger.warning(f'Error updating bone "{name}" matrix: {error}')
+                    continue
 
             else:
                 logger.warning(f'The bone "{name}" was not found on "{self.body_rig.name}". Rig Logic will not update the bone.')
@@ -1915,17 +1929,25 @@ class RigLogicInstance(bpy.types.PropertyGroup):
         ):
         # this condition prevents constant evaluation
         if bpy.context.window_manager.meta_human_dna.evaluate_dependency_graph: # type: ignore
+            # turn off the dependency graph evaluation so we can update the controls without triggering an update
+            bpy.context.window_manager.meta_human_dna.evaluate_dependency_graph = False # type: ignore
+            
             if not self.head_initialized:
                 self.head_initialize()
             
             if not self.body_initialized:
                 self.body_initialize()
 
-            # turn off the dependency graph evaluation so we can update the controls without triggering an update
-            bpy.context.window_manager.meta_human_dna.evaluate_dependency_graph = False # type: ignore
-
             # apply the dependency graph update so we have the latest evaluated bone transforms
             self.apply_dependency_graph_update(dependency_graph)
+
+            if component in ('body', 'all') and self.body_initialized:
+                if self.evaluate_rbfs:
+                    self.update_body_raw_control_values()
+                
+                # apply the changes
+                if self.evaluate_bones:
+                    self.update_body_bone_transforms()
             
             if component in ('head', 'all') and self.head_initialized:
                 # update the gui controls    
@@ -1939,14 +1961,6 @@ class RigLogicInstance(bpy.types.PropertyGroup):
                     self.update_head_shape_keys()
                 if self.evaluate_texture_masks:
                     self.update_head_texture_masks()
-
-            if component in ('body', 'all') and self.body_initialized:
-                if self.evaluate_rbfs:
-                    self.update_body_raw_control_values()
-                
-                # apply the changes
-                if self.evaluate_bones:
-                    self.update_body_bone_transforms()
 
             # turn on the dependency graph evaluation back on
             bpy.context.window_manager.meta_human_dna.evaluate_dependency_graph = True # type: ignore

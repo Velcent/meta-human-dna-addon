@@ -349,6 +349,7 @@ def pre_undo(*args):
         bpy.context.region.type == 'WINDOW'
     ):
         bpy.context.window_manager.meta_human_dna.evaluate_dependency_graph = False # type: ignore
+        bpy.context.window_manager.meta_human_dna.is_undoing = True # type: ignore
         for instance in bpy.context.scene.meta_human_dna.rig_logic_instance_list: # type: ignore
             instance.destroy()
 
@@ -360,7 +361,13 @@ def post_undo(*args):
         bpy.context.region and
         bpy.context.region.type == 'WINDOW'
     ):
-        bpy.ops.meta_human_dna.force_evaluate() # type: ignore
+        bpy.context.window_manager.meta_human_dna.evaluate_dependency_graph = True # type: ignore
+
+def pre_redo(*args):
+    pre_undo(*args)
+
+def post_redo(*args):
+    post_undo(*args)
 
 def pre_render(*args):
     pre_undo(*args)
@@ -743,11 +750,12 @@ def extract_rig_instance_data_from_blend_file(blend_file_path: Path) -> tuple[li
     script_file = SCRIPTS_FOLDER / 'save_rig_instance_data.py'
     data_file = TEMP_FOLDER / f"{file_id}.json"
     error_file = TEMP_FOLDER / f"{file_id}_error.log"
+    addon_folder = Path(__file__).parent.parent.parent
 
     if sys.platform == 'win32':
-        command = f'"{bpy.app.binary_path}" --background --python "{script_file}" -- --data-file "{data_file}" --blend-file "{blend_file_path}"'
+        command = f'"{sys.executable}" "{script_file}" -- --data-file "{data_file}" --blend-file "{blend_file_path}" --addon-folder "{addon_folder}"'
     else:
-        command = f"{Path(bpy.app.binary_path).as_posix()} --background --python {script_file} -- --data-file {data_file.as_posix()} --blend-file {blend_file_path.as_posix()}"
+        command = f"{sys.executable} {script_file.as_posix()} -- --data-file {data_file.as_posix()} --blend-file {blend_file_path.as_posix()} --addon-folder {addon_folder.as_posix()}"
 
     for line in shell(command=command):
         pass
@@ -812,7 +820,7 @@ def hide_face_board_widgets():
 
 
 def purge_face_board_components():
-    with bpy.data.libraries.load(str(FACE_BOARD_FILE_PATH)) as (data_from, data_to):
+    with bpy.data.libraries.load(str(FACE_BOARD_FILE_PATH)) as (data_from, data_to): # type: ignore
         if data_from.objects:
             for name in data_from.objects:
                 scene_object = bpy.data.objects.get(name)
