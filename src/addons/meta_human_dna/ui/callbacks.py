@@ -696,10 +696,17 @@ def update_body_rig_bone_group_selection(self, context):
         body.select_bone_group()
 
 def update_face_pose(self, context):
-    from ..utilities import get_active_head
-    head = get_active_head()
-    if head:
-        head.set_face_pose()
+    from ..utilities import get_head
+    active_instance = get_active_rig_logic()
+    if not active_instance:
+        return
+
+    # update all instances with the same face board
+    for instance in context.scene.meta_human_dna.rig_logic_instance_list:
+        if instance.face_board == active_instance.face_board:
+            head = get_head(instance.name)
+            if head:
+                head.set_face_pose()
 
 def update_head_to_body_constraint_influence(self, context):
     from ..utilities import get_active_head
@@ -761,6 +768,12 @@ def get_body_image_output_items(instance: 'RigLogicInstance') -> list[tuple[bpy.
     return image_nodes
 
 def update_instance_name(self, context):
+    existing_names = [instance.name for instance in context.scene.meta_human_dna.rig_logic_instance_list]
+    if existing_names.count(self.name) > 1:
+        self.name = self.old_name
+        logger.warning(f'Rig Instance with name "{self.name}" already exists. Please choose a different name.')
+        return
+
     if self.old_name != self.name:
         from ..utilities import rename_rig_logic_instance
         rename_rig_logic_instance(

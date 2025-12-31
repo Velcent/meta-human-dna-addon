@@ -89,6 +89,8 @@ from fixtures.scene import (  # noqa: E402, F401
     load_body_dna_for_pose_roundtrip,
     load_full_dna_for_animation,
     load_mhc_conformed_topology_meshes,
+    load_dna_for_rig_instance_ops,
+    setup_reference_blend_file,
     head_bmesh,
     head_armature,
     modify_head_scene
