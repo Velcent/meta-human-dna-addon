@@ -8,6 +8,9 @@ on:
       blender-version:
         required: true
         type: string
+      runner-os:
+        required: true
+        type: string
 
     secrets:
       GH_PAT:
@@ -15,23 +18,19 @@ on:
 
 jobs:
   test:
-    strategy:
-      matrix:
-        os: [windows-latest, ubuntu-latest, macos-latest]
-
     timeout-minutes: 30
     name: Tests
-    runs-on: ${{ matrix.os }}
+    runs-on: ${{ inputs.runner-os }}
     env:
       PYTHONUNBUFFERED: 1
       META_HUMAN_DNA_DEV: 1
       RUNNING_CI: 1
-    
-    steps:      
+
+    steps:
       - name: Checkout Repo
         uses: actions/checkout@v4
         with:
-          path: 'meta-human-dna-addon'
+          path: "meta-human-dna-addon"
           lfs: true
           submodules: true
           token: ${{ secrets.GH_PAT }}
@@ -39,42 +38,47 @@ jobs:
       - name: Checkout meta-human-dna-bindings Repo
         uses: actions/checkout@v4
         with:
-          repository: 'poly-hammer/meta-human-dna-bindings'
-          path: 'meta-human-dna-bindings'
+          repository: "poly-hammer/meta-human-dna-bindings"
+          path: "meta-human-dna-bindings"
           token: ${{ secrets.GH_PAT }}
 
       - name: Checkout meta-human-dna-core Repo
         uses: actions/checkout@v4
         with:
-          repository: 'poly-hammer/meta-human-dna-core'
-          path: 'meta-human-dna-core'
+          repository: "poly-hammer/meta-human-dna-core"
+          path: "meta-human-dna-core"
           token: ${{ secrets.GH_PAT }}
 
-      - name: Set up Python ${{ inputs.python-version }} 
+      - name: Set up Python ${{ inputs.python-version }}
         uses: actions/setup-python@v5
         with:
-          python-version: ${{ inputs.python-version }} 
+          python-version: ${{ inputs.python-version }}
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          version: "latest"
 
       - name: Install Dependencies
         run: |
           cd meta-human-dna-addon
-          pip install --upgrade -r requirements.txt
-          pip install --upgrade bpy==${{ inputs.blender-version }}.*
+          uv sync
+          uv pip install --upgrade bpy==${{ inputs.blender-version }}.*
 
       - name: Run Tests Windows
-        if: matrix.os == 'windows-latest'
+        if: inputs.runner-os == 'windows-latest'
         run: |
           cd meta-human-dna-addon
           .github\workflows\pytest-windows.bat
 
       - name: Run Tests Linux
-        if: matrix.os == 'ubuntu-latest'
+        if: inputs.runner-os == 'ubuntu-latest'
         run: |
           cd meta-human-dna-addon
           bash ./.github/workflows/pytest-linux.sh
 
       - name: Run Tests MacOS
-        if: matrix.os == 'macos-latest'
+        if: inputs.runner-os == 'macos-latest'
         run: |
           cd meta-human-dna-addon
           bash ./.github/workflows/pytest-mac.sh
@@ -84,13 +88,13 @@ jobs:
         # always run even if the previous step fails
         if: success() || failure()
         with:
-          check_name: Test Results (${{ matrix.os }} ${{ inputs.blender-version }})
+          check_name: Test Results (${{ inputs.runner-os }} ${{ inputs.blender-version }})
           include_passed: True
           fail_on_failure: True
           require_tests: True
           require_passed_tests: True
           detailed_summary: True
-          report_paths: './meta-human-dna-addon/reports/pytest/*.xml'
+          report_paths: "./meta-human-dna-addon/reports/pytest/*.xml"
 
       - name: Upload coverage reports to Codecov
         uses: codecov/codecov-action@v5

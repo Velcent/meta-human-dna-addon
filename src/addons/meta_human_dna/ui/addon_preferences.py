@@ -1,13 +1,26 @@
-import bpy
+# standard library imports
 from pathlib import Path
-from ..properties import MetahumanDnaAddonProperties, ExtraDnaFolder
+
+# third party imports
+import bpy
+
+# local imports
+from .. import __package__ as package_name
 from ..constants import ToolInfo
-from .. import __package__
+from ..properties import ExtraDnaFolder, MetahumanAddonProperties
+from ..typing import *  # noqa: F403
 
 
 class FOLDER_UL_extra_dna_path(bpy.types.UIList):
     def draw_item(
-        self, context, layout, data, item, icon, active_data, active_prop_name
+        self,
+        context: "Context",
+        layout: bpy.types.UILayout,
+        data: "MetaHumanDnaPreferences",
+        item: "ExtraDnaFolder",
+        icon: int | None,
+        active_data: "MetaHumanDnaPreferences",
+        active_prop_name: str,
     ):
         row = layout.row()
         row.alert = False
@@ -16,14 +29,31 @@ class FOLDER_UL_extra_dna_path(bpy.types.UIList):
         row.prop(item, "folder_path", text="", emboss=False)
 
 
-class MetaHumanDnaPreferences(MetahumanDnaAddonProperties, bpy.types.AddonPreferences):
-    bl_idname = str(__package__)
+class MetaHumanDnaPreferences(MetahumanAddonProperties, bpy.types.AddonPreferences):
+    bl_idname = str(package_name)
 
-    def draw(self, context):
+    def draw(self, context: "Context"):
         preferences = context.preferences.addons[ToolInfo.NAME].preferences
-        row = self.layout.row()
+        layout = self.layout
+
+        # General Settings
+        row = layout.row()
         row.prop(self, "metrics_collection", text="Allow Metrics Collection")
-        row = self.layout.row()
+        row = layout.row()
+        row.prop(self, "show_pose_editor_viewport_overlay", text="Show Pose Editor Viewport Overlay")
+
+        # DNA Backup Settings
+        layout.separator()
+        box = layout.box()
+        box.label(text="Backup Manager Settings:", icon="FILE_BACKUP")
+        row = box.row()
+        row.prop(self, "enable_auto_dna_backups", text="Enable Auto DNA Backups")
+        row.enabled = self.enable_auto_dna_backups
+        row.prop(self, "max_dna_backups", text="Maximum Backups to Keep")
+
+        # Extra DNA Folder Paths
+        layout.separator()
+        row = layout.row()
 
         row.label(text="Extra DNA Folder Paths:")
         row = self.layout.row()
@@ -38,9 +68,7 @@ class MetaHumanDnaPreferences(MetahumanDnaAddonProperties, bpy.types.AddonPrefer
         )
 
         col = row.column()
-        col.operator(
-            "meta_human_dna.addon_preferences_extra_dna_entry_add", text="", icon="ADD"
-        )
+        col.operator("meta_human_dna.addon_preferences_extra_dna_entry_add", text="", icon="ADD")
         row = col.row()
         row.enabled = len(preferences.extra_dna_folder_list) > 0
         row.operator(
