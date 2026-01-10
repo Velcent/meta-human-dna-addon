@@ -70,7 +70,7 @@
         },
         {
             "label": "Ruff: Format",
-            "command": "uv run ruff format",
+            "command": "uv run ruff check --fix; uv run ruff format",
             "type": "shell",
             "group": {
                 "kind": "build"
@@ -96,7 +96,7 @@
         },
         {
             "label": "Pre-commit: Run",
-            "command": "uv run pre-commit run ${input:pre-commit-scope}",
+            "command": "uv run pre-commit run ${input:pre-commit-scope} --verbose --show-diff-on-failure",
             "type": "shell",
             "group": {
                 "kind": "build"
