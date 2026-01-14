@@ -13,9 +13,10 @@ IS_BLENDER_5 = bpy.app.version >= (5, 0, 0)
 
 
 class ToolInfo:
-    NAME = "meta_human_dna"
-    BUILD_TOOL_DOCUMENTATION = "https://docs.polyhammer.com/hammer-build-tool/setup/"
-    METRICS_COLLECTION_AGREEMENT = "https://www.polyhammer.com/dpa"
+    NAME: str = "meta_human_dna"
+    EXTENSION_ID: str | None = None
+    BUILD_TOOL_DOCUMENTATION: str = "https://docs.polyhammer.com/hammer-build-tool/setup/"
+    METRICS_COLLECTION_AGREEMENT: str = "https://www.polyhammer.com/dpa"
 
 
 Axis = Literal["X", "Y", "Z"]
@@ -76,13 +77,14 @@ BODY_MESH_SHADER_MAPPING = {"body_lod": "body_shader"}
 TEMP_FOLDER = Path(tempfile.gettempdir()) / f"{ToolInfo.NAME}_addon"
 RESOURCES_FOLDER = Path(__file__).parent / "resources"
 BINDINGS_FOLDER = Path(__file__).parent / "bindings"
-PACKAGES_FOLDER = RESOURCES_FOLDER / "packages"
 POSES_FOLDER = RESOURCES_FOLDER / "poses"
 BLENDS_FOLDER = RESOURCES_FOLDER / "blends"
 SCRIPTS_FOLDER = RESOURCES_FOLDER / "scripts"
 IMAGES_FOLDER = RESOURCES_FOLDER / "images"
 MAPPINGS_FOLDER = RESOURCES_FOLDER / "mappings"
 BASE_DNA_FOLDER = RESOURCES_FOLDER / "dna"
+
+DEFAULT_BACKUPS_FOLDER = TEMP_FOLDER / "backups"
 
 HEAD_TOPOLOGY_VERTEX_GROUPS_FILE_PATH = MAPPINGS_FOLDER / "head_topology_vertex_groups.json"
 

@@ -1227,7 +1227,7 @@ class SendToMetaHumanCreator(bpy.types.Operator):
 
                 valid, title, message, fix = dna_io_instance.run()
                 if not valid:
-                    utilities.report_error(title=title, message=message, fix=fix, width=500)
+                    utilities.report_error_panel(title=title, message=message, fix=fix, width=500)
                     return {"CANCELLED"}
                 self.report({"INFO"}, message)
 
@@ -1296,7 +1296,7 @@ class ExportSelectedComponent(bpy.types.Operator):
             bpy.ops.meta_human_dna.force_evaluate()  # type: ignore[attr-defined]
 
             if not valid:
-                utilities.report_error(title=title, message=message, fix=fix, width=300)
+                utilities.report_error_panel(title=title, message=message, fix=fix, width=300)
                 return {"CANCELLED"}
             self.report({"INFO"}, message)
 
@@ -1486,10 +1486,21 @@ class ShapeKeyOperatorBase(bpy.types.Operator):
         return shape_key_index, key_block, channel_index, mesh_object
 
 
-class MetaHumanDnaReportError(ShapeKeyOperatorBase):
+class ReportError(bpy.types.Operator):
+    bl_idname = "meta_human_dna.report_error"
+    bl_label = "Error"
+
+    message: bpy.props.StringProperty(default="")  # pyright: ignore[reportInvalidTypeForm]
+
+    def execute(self, context: "Context") -> set[str]:
+        self.report({"ERROR"}, self.message)
+        return {"CANCELLED"}
+
+
+class ReportErrorWithFix(ShapeKeyOperatorBase):
     """Reports and error message to the user with a optional fix"""
 
-    bl_idname = "meta_human_dna.report_error"
+    bl_idname = "meta_human_dna.report_error_with_fix"
     bl_label = "Error"
 
     title: bpy.props.StringProperty(default="")  # pyright: ignore[reportInvalidTypeForm]
@@ -1532,8 +1543,10 @@ class MetricsCollectionConsent(bpy.types.Operator):
     bl_label = "MetaHuman DNA Addon Metrics"
 
     def execute(self, context: "Context") -> set[str]:
-        preferences = context.preferences.addons[ToolInfo.NAME].preferences
-        preferences.metrics_collection = True
+        addon_preferences = utilities.get_addon_preferences()
+        if not addon_preferences:
+            return {"CANCELLED"}
+        addon_preferences.metrics_collection = True
         utilities.init_sentry()
         bpy.ops.meta_human_dna.force_evaluate()  # type: ignore[attr-defined]
         return {"FINISHED"}
@@ -1543,25 +1556,30 @@ class MetricsCollectionConsent(bpy.types.Operator):
         if not wm:
             return None
 
-        preferences = context.preferences.addons[ToolInfo.NAME].preferences
+        addon_preferences = utilities.get_addon_preferences()
+        if not addon_preferences:
+            return {"CANCELLED"}
+
         current_timestamp = datetime.now(UTC).timestamp()
 
-        if preferences.metrics_collection:
+        if addon_preferences.metrics_collection:
             utilities.init_sentry()
             return {"FINISHED"}
 
-        if bpy.app.online_access and preferences.next_metrics_consent_timestamp < current_timestamp:
+        if bpy.app.online_access and addon_preferences.next_metrics_consent_timestamp < current_timestamp:
             return wm.invoke_props_dialog(self, confirm_text="Allow", cancel_default=False, width=500)  # type: ignore[return-value]
-        if bpy.app.online_access and preferences.metrics_collection:
+        if bpy.app.online_access and addon_preferences.metrics_collection:
             utilities.init_sentry()
 
         return {"FINISHED"}
 
     def cancel(self, context: "Context") -> None:
-        preferences = context.preferences.addons[ToolInfo.NAME].preferences
+        addon_preferences = utilities.get_addon_preferences()
+        if not addon_preferences:
+            return
         # wait 30 days before asking again
-        preferences.next_metrics_consent_timestamp = (datetime.now(UTC) + timedelta(days=30)).timestamp()
-        preferences.metrics_collection = False
+        addon_preferences.next_metrics_consent_timestamp = (datetime.now(UTC) + timedelta(days=30)).timestamp()
+        addon_preferences.metrics_collection = False
         bpy.ops.meta_human_dna.force_evaluate()  # type: ignore[attr-defined]
 
     def draw(self, context: "Context"):
@@ -1976,7 +1994,9 @@ class UILIST_ADDON_PREFERENCES_OT_extra_dna_entry_remove(GenericUIListOperator, 
     bl_label = "Remove Selected Entry"
 
     def execute(self, context: "Context") -> set[str]:
-        addon_preferences = context.preferences.addons[ToolInfo.NAME].preferences
+        addon_preferences = utilities.get_addon_preferences()
+        if not addon_preferences:
+            return {"CANCELLED"}
         my_list = addon_preferences.extra_dna_folder_list
         active_index = addon_preferences.extra_dna_folder_list_active_index
         my_list.remove(active_index)
@@ -1992,7 +2012,9 @@ class UILIST_ADDON_PREFERENCES_OT_extra_dna_entry_add(GenericUIListOperator, bpy
     bl_label = "Add Entry"
 
     def execute(self, context: "Context") -> set[str]:
-        addon_preferences = context.preferences.addons[ToolInfo.NAME].preferences
+        addon_preferences = utilities.get_addon_preferences()
+        if not addon_preferences:
+            return {"CANCELLED"}
         my_list = addon_preferences.extra_dna_folder_list
         active_index = addon_preferences.extra_dna_folder_list_active_index
         to_index = min(len(my_list), active_index + 1)

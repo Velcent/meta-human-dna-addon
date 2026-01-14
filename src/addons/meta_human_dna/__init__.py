@@ -19,7 +19,7 @@ logger = logging.getLogger(constants.ToolInfo.NAME)
 bl_info = {
     "name": "MetaHuman DNA",
     "author": "Poly Hammer",
-    "version": (0, 5, 5),
+    "version": (0, 5, 6),
     "blender": (4, 5, 0),
     "location": "File > Import > MetaHuman DNA",
     "description": (
@@ -47,7 +47,6 @@ pose_editor_operator_classes = [
     pose_editor_operators.RemoveRBFDriver,
     pose_editor_operators.AddRBFDriven,
     pose_editor_operators.RemoveRBFDriven,
-    pose_editor_operators.SelectAllRBFDriven,
 ]
 pose_editor_ui_classes = [
     pose_editor_ui.META_HUMAN_DNA_PT_pose_editor,
@@ -68,6 +67,7 @@ backup_manager_operator_classes = [
     backup_manager_operators.META_HUMAN_DNA_OT_delete_backup,
     backup_manager_operators.META_HUMAN_DNA_OT_open_backup_folder,
     backup_manager_operators.META_HUMAN_DNA_OT_sync_backups,
+    backup_manager_operators.META_HUMAN_DNA_OT_create_manual_backup,
 ]
 backup_manager_ui_classes = [
     backup_manager_ui.META_HUMAN_DNA_UL_dna_backups,
@@ -103,7 +103,8 @@ classes = [
     operators.ReImportThisShapeKey,
     operators.DuplicateRigInstance,
     operators.AddRigLogicTextureNode,
-    operators.MetaHumanDnaReportError,
+    operators.ReportError,
+    operators.ReportErrorWithFix,
     operators.UILIST_RIG_INSTANCE_OT_entry_move,
     operators.UILIST_RIG_INSTANCE_OT_entry_add,
     operators.UILIST_RIG_INSTANCE_OT_entry_remove,

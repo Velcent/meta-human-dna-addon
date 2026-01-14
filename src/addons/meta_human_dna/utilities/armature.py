@@ -12,7 +12,6 @@ from mathutils import Euler, Matrix, Quaternion, Vector
 
 # local imports
 from ..constants import (
-    BONE_DELTA_THRESHOLD,
     CUSTOM_BONE_SHAPE_NAME,
     CUSTOM_BONE_SHAPE_SCALE,
     BodyBoneCollection,
@@ -134,7 +133,7 @@ def set_bone_collection(
 
 
 def set_head_bone_collections(mesh_object: bpy.types.Object, rig_object: bpy.types.Object):
-    from ..bindings import meta_human_dna_core
+    from ..bindings import meta_human_dna_core  # pyright: ignore[reportAttributeAccessIssue]
 
     if not rig_object.pose:
         return
@@ -210,7 +209,7 @@ def set_body_bone_collections(
     from .misc import dependencies_are_valid
 
     if mesh_object and rig_object.pose and dependencies_are_valid():
-        import meta_human_dna_core
+        from ..bindings import meta_human_dna_core  # pyright: ignore[reportAttributeAccessIssue]
 
         other_name_bones = [
             pose_bone.name
@@ -488,7 +487,7 @@ def get_topology_group_surface_bones(
     vertex_group_name: str,
     dna_reader: "riglogic.BinaryStreamReader",
 ) -> list[bpy.types.Bone]:
-    from ..bindings import meta_human_dna_core
+    from ..bindings import meta_human_dna_core  # pyright: ignore[reportAttributeAccessIssue]
 
     bones = []
     vertex_indices = get_vertex_group_vertices(mesh_object, vertex_group_name)
@@ -504,7 +503,7 @@ def get_topology_group_surface_bones(
 
 def get_mouth_bone_names(armature_object: bpy.types.Object) -> list[str]:
     bones = []
-    from ..bindings import meta_human_dna_core
+    from ..bindings import meta_human_dna_core  # pyright: ignore[reportAttributeAccessIssue]
 
     if not armature_object.data or not isinstance(armature_object.data, bpy.types.Armature):
         return bones
@@ -529,13 +528,13 @@ def get_mouth_bone_names(armature_object: bpy.types.Object) -> list[str]:
 
 
 def get_eye_bones_names(side: Literal["l", "r"]) -> list[str]:
-    from ..bindings import meta_human_dna_core
+    from ..bindings import meta_human_dna_core  # pyright: ignore[reportAttributeAccessIssue]
 
     return meta_human_dna_core.EYE_BALL_L_BONES if side == "l" else meta_human_dna_core.EYE_BALL_R_BONES
 
 
 def get_ignored_bones_names(armature_object: bpy.types.Object) -> list[str]:
-    from ..bindings import meta_human_dna_core
+    from ..bindings import meta_human_dna_core  # pyright: ignore[reportAttributeAccessIssue]
 
     mouth_bone_names = get_mouth_bone_names(armature_object)
     return mouth_bone_names + meta_human_dna_core.EYE_BALL_L_BONES + meta_human_dna_core.EYE_BALL_R_BONES
@@ -549,8 +548,7 @@ def auto_fit_bones(
     component_type: ComponentType,
     only_selected: bool = False,
 ):
-    import meta_human_dna_core
-
+    from ..bindings import meta_human_dna_core  # pyright: ignore[reportAttributeAccessIssue]
     from ..dna_io import DNAExporter
 
     bmesh_object = DNAExporter.get_bmesh(mesh_object, rotation=0)
@@ -690,123 +688,3 @@ def get_pose_bone_local_quaternion(pose_bone: bpy.types.PoseBone) -> Quaternion:
 
     # Extract and return the quaternion
     return matrix_basis.to_quaternion().normalized()
-
-
-def set_driven_bone_data(
-    instance: "RigInstance",
-    pose: "RBFPoseData",
-    driven: "RBFDrivenData",
-    pose_bone: bpy.types.PoseBone,
-    new: bool = False,
-) -> None:
-    if pose_bone:
-        if not instance.body_initialized:
-            instance.body_initialize(update_rbf_solver_list=False)
-
-        existing_rotation = Vector(driven.euler_rotation[:])
-        existing_location = Vector(driven.location[:])
-        existing_scale = Vector(driven.scale[:])
-
-        driven.name = pose_bone.name
-        driven.pose_index = pose.pose_index
-        driven.data_type = "BONE"
-        # Find the joint index for this bone
-        for joint_index in range(instance.body_dna_reader.getJointCount()):
-            joint_name = instance.body_dna_reader.getJointName(joint_index)
-            if joint_name == pose_bone.name:
-                driven.joint_index = joint_index
-                break
-
-        # Get the rest pose for this bone
-        rest_location, _rest_rotation, rest_scale, rest_to_parent_matrix = instance.body_rest_pose[pose_bone.name]
-
-        # Extract current transforms from the bone's matrix_basis
-        modified_matrix = rest_to_parent_matrix @ pose_bone.matrix_basis
-        current_location = modified_matrix.to_translation()
-        current_scale = modified_matrix.to_scale()
-
-        # Calculate deltas from rest pose (this is what DNA stores)
-        location = Vector(
-            [
-                current_location.x - rest_location.x,
-                current_location.y - rest_location.y,
-                current_location.z - rest_location.z,
-            ]
-        )
-
-        # rotation is directly in the bone local space
-        rotation = pose_bone.rotation_euler.copy()
-
-        # Scale delta (DNA stores 0.0 for scale_factor, actual delta otherwise)
-        scale = Vector(
-            [
-                current_scale.x - rest_scale.x
-                if round(current_scale.x - rest_scale.x, 5) != 0.0
-                else pose.scale_factor,
-                current_scale.y - rest_scale.y
-                if round(current_scale.y - rest_scale.y, 5) != 0.0
-                else pose.scale_factor,
-                current_scale.z - rest_scale.z
-                if round(current_scale.z - rest_scale.z, 5) != 0.0
-                else pose.scale_factor,
-            ]
-        )
-
-        rotation_delta = Vector(rotation[:]).copy() - existing_rotation
-        location_delta = location.copy() - existing_location
-        scale_delta = scale.copy() - existing_scale
-
-        # only update if the delta is significant enough to avoid floating point value drift
-        if rotation_delta.length > BONE_DELTA_THRESHOLD or new:
-            driven.euler_rotation = rotation[:]
-            logger.info(
-                'Updated RBF pose "%s" driven bone "%s" rotation to %s',
-                pose.name,
-                driven.name,
-                driven.euler_rotation[:],
-            )
-        if location_delta.length > BONE_DELTA_THRESHOLD or new:
-            driven.location = location[:]
-            logger.info(
-                'Updated RBF pose "%s" driven bone "%s" location to %s', pose.name, driven.name, driven.location[:]
-            )
-
-        # only update if scale is not zero or equal to the scale factor, because only those are actual deltas
-        if all(round(abs(i), 5) != 0.0 and pose.scale_factor != round(abs(i), 5) for i in scale_delta) or new:
-            driven.scale = scale[:]
-            logger.info('Updated RBF pose "%s" driven bone "%s" scale to %s', pose.name, driven.name, driven.scale[:])
-
-
-def set_driver_bone_data(
-    instance: "RigInstance",
-    pose: "RBFPoseData",
-    driver: "RBFDriverData",
-    pose_bone: bpy.types.PoseBone,
-    new: bool = False,
-) -> None:
-    if pose_bone:
-        if not instance.body_initialized:
-            instance.body_initialize(update_rbf_solver_list=False)
-
-        driver.solver_index = pose.solver_index
-        driver.pose_index = pose.pose_index
-        driver.name = pose_bone.name
-
-        # only update if the delta is significant enough to avoid floating point value drift
-        delta = Quaternion(driver.quaternion_rotation[:]) - pose_bone.rotation_quaternion.copy()
-        if any(abs(i) > BONE_DELTA_THRESHOLD for i in delta) or new:
-            driver.euler_rotation = pose_bone.rotation_quaternion.to_euler("XYZ")[:]
-            driver.quaternion_rotation = pose_bone.rotation_quaternion[:]
-            logger.info(
-                'Updated RBF pose "%s" driver bone "%s" rotation to %s',
-                pose.name,
-                driver.name,
-                driver.quaternion_rotation[:],
-            )
-
-        # Find the joint index for this bone
-        for joint_index in range(instance.body_dna_reader.getJointCount()):
-            joint_name = instance.body_dna_reader.getJointName(joint_index)
-            if joint_name == pose_bone.name:
-                driver.joint_index = joint_index
-                break

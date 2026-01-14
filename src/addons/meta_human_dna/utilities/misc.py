@@ -1,4 +1,5 @@
 # standard library imports
+import hashlib
 import json
 import logging
 import math
@@ -29,7 +30,6 @@ from ..constants import (
     LEGACY_DATA_KEYS,
     MATERIALS_FILE_PATH,
     NUMBER_OF_HEAD_LODS,
-    PACKAGES_FOLDER,
     SCRIPTS_FOLDER,
     SENTRY_DSN,
     TEMP_FOLDER,
@@ -236,17 +236,20 @@ def init_sentry():
     if os.environ.get("META_HUMAN_DNA_DEV"):
         return
 
+    if not bpy.context.preferences:
+        return
+
     # Don't collect metrics if the user has disabled online access
     if not bpy.app.online_access:
         return
 
-    # Don't collect metrics if the user has disabled it
-    addon_preferences: "MetahumanAddonProperties" = bpy.context.preferences.addons[ToolInfo.NAME].preferences  # pyright: ignore[reportOptionalMemberAccess, reportAssignmentType] # noqa: UP037
-    if not addon_preferences.metrics_collection:
+    addon_preferences = get_addon_preferences()
+    if not addon_preferences:
         return
 
-    if PACKAGES_FOLDER not in [Path(path) for path in sys.path]:
-        sys.path.append(str(PACKAGES_FOLDER))
+    # Don't collect metrics if the user has disabled it
+    if not addon_preferences.metrics_collection:
+        return
 
     try:
         import sentry_sdk
@@ -576,7 +579,20 @@ def rename_as_lod0_meshes(mesh_objects: list[bpy.types.Object]):
         update_head_output_items(None, bpy.context)  # type: ignore[arg-type]
 
 
-def report_error(title: str, message: str, fix: Callable | None = None, width: int = 500):
+def report_error(message: str):
+    """
+    Raises and error pop up to report a error message to the user.
+
+    Args:
+        message (str): The body text with the error message.
+    """
+    bpy.ops.meta_human_dna.report_error(  # type: ignore[attr-defined]
+        # "INVOKE_DEFAULT",
+        message=message
+    )
+
+
+def report_error_panel(title: str, message: str, fix: Callable | None = None, width: int = 500):
     """
     Raises and error dialog to report error messages to the user with an optional fix.
 
@@ -591,7 +607,7 @@ def report_error(title: str, message: str, fix: Callable | None = None, width: i
         width (int, optional): The width of the modal. Defaults to 500.
     """
     bpy.context.window_manager.meta_human_dna.errors[title] = {"fix": fix}  # type: ignore[attr-defined]
-    bpy.ops.meta_human_dna.report_error(  # type: ignore[attr-defined]
+    bpy.ops.meta_human_dna.report_error_with_fix(  # type: ignore[attr-defined]
         "INVOKE_DEFAULT",
         title=title,
         message=message,
@@ -1004,3 +1020,44 @@ def migrate_legacy_data(context: "Context") -> None:  # noqa: PLR0912
 
         # Remove old data after migration
         del context.scene.meta_human_dna[key]
+
+
+def get_addon_preferences() -> "MetahumanAddonProperties | None":
+    """
+    Gets the addon preferences for the MetaHuman DNA addon.
+
+    Returns:
+        MetahumanAddonProperties | None: The addon preferences or None if not found.
+    """
+    if not bpy.context.preferences:
+        return None
+
+    # use cached extension id if available
+    if ToolInfo.EXTENSION_ID:
+        return bpy.context.preferences.addons[ToolInfo.EXTENSION_ID].preferences  # type: ignore[attr-defined]
+
+    # search for the addon preferences, these can be defined under different names depending on how
+    # the addon was installed. E.g. "meta_human_dna" or "bl_ext.user_default.meta_human_dna"
+    for extension_id in bpy.context.preferences.addons.keys():  # noqa: SIM118
+        key = extension_id.split(".")[-1]
+        if key == ToolInfo.NAME:
+            ToolInfo.EXTENSION_ID = extension_id
+            return bpy.context.preferences.addons[extension_id].preferences  # type: ignore[attr-defined]
+    return None
+
+
+def consistent_hash(input_string: str) -> str:
+    """
+    Generates a consistent SHA256 hash for a given string across runtimes.
+    """
+    # The input to hashlib functions must be bytes.
+    # Use encode() to convert the string to a byte sequence (utf-8 is standard).
+    byte_string = input_string.encode("utf-8")
+
+    # Create a new hash object
+    hash_object = hashlib.sha256(byte_string)
+
+    # Get the hexadecimal representation of the hash
+    hex_digest = hash_object.hexdigest()
+
+    return hex_digest
