@@ -181,7 +181,10 @@ def update_body_rbf_driven_active_index(self: "RBFPoseData", context: "Context")
     if not instance or not instance.body_rig or not instance.editing_rbf_solver:
         return
 
-    driven = self.driven[self.driven_active_index]
+    driven = get_active_driven(instance)
+    if not driven:
+        return
+
     instance.body_rig.hide_set(False)
     utilities.switch_to_pose_mode(instance.body_rig)
     for pose_bone in instance.body_rig.pose.bones:
@@ -198,7 +201,7 @@ def update_body_rbf_driven_active_index(self: "RBFPoseData", context: "Context")
             pose_bone.bone.select = False
 
 
-def update_body_rbf_poses_active_index(self: "RBFSolverData", context: "Context"):  # noqa: ARG001
+def update_body_rbf_poses_active_index(self: "RBFSolverData", context: "Context"):  # noqa: ARG001, PLR0912
     if not utilities.dependencies_are_valid():
         return
 
@@ -209,12 +212,17 @@ def update_body_rbf_poses_active_index(self: "RBFSolverData", context: "Context"
     if not instance or not instance.body_rig:
         return
 
-    pose = self.poses[self.poses_active_index]
+    pose = get_active_pose(instance)
+    if not pose:
+        return
 
     # reset all bone transforms
     if instance.body_reset_rbf_pose_on_change or instance.editing_rbf_solver:
         for pose_bone in instance.body_rig.pose.bones:
             pose_bone.matrix_basis = Matrix.Identity(4)
+
+    if pose.name == "default":
+        return
 
     for driver in pose.drivers:
         pose_bone = instance.body_rig.pose.bones.get(driver.name)
@@ -413,6 +421,10 @@ def update_driven_bone(instance: "RigInstance", pose_bone: bpy.types.PoseBone):
     if not pose:
         return
 
+    # Default pose driven data is only for UI display, don't update it
+    if pose.name == "default":
+        return
+
     for driven in pose.driven:
         if driven.name == pose_bone.name:
             set_driven_bone_data(instance=instance, pose=pose, driven=driven, pose_bone=pose_bone)
@@ -443,16 +455,18 @@ def update_pose(instance: "RigInstance", _: "Context"):
             )
 
     # Update all the driven bone data for the pose
-    for driven in pose.driven:
-        driven_pose_bone = instance.body_rig.pose.bones.get(driven.name)
-        if driven_pose_bone:
-            set_driven_bone_data(instance=instance, pose=pose, driven=driven, pose_bone=driven_pose_bone)
-        else:
-            logger.warning(
-                f'Driven bone "{driven.name}" was not found in armature when '
-                f'updating RBF Pose "{pose.name}". It will be deleted from '
-                "the pose when this data is committed to the dna."
-            )
+    # Skip the default pose - its driven data is only for UI display purposes
+    if pose.name != "default":
+        for driven in pose.driven:
+            driven_pose_bone = instance.body_rig.pose.bones.get(driven.name)
+            if driven_pose_bone:
+                set_driven_bone_data(instance=instance, pose=pose, driven=driven, pose_bone=driven_pose_bone)
+            else:
+                logger.warning(
+                    f'Driven bone "{driven.name}" was not found in armature when '
+                    f'updating RBF Pose "{pose.name}". It will be deleted from '
+                    "the pose when this data is committed to the dna."
+                )
 
 
 def diff_rbf_pose_data(instance: "RigInstance"):  # noqa: PLR0912
@@ -550,3 +564,236 @@ def validate_no_duplicate_driver_bone_values(instance: "RigInstance") -> tuple[b
                     )
 
     return True, ""
+
+
+def get_solver_joint_group_bones(instance: "RigInstance") -> set[str]:
+    solver = get_active_solver(instance)
+    if not solver:
+        return set()
+
+    bone_names: set[str] = set()
+    for pose in solver.poses:
+        for driven in pose.driven:
+            if driven.data_type == "BONE":
+                bone_names.add(driven.name)
+
+    return bone_names
+
+
+def get_available_driven_bones(instance: "RigInstance") -> list[tuple[str, int, bool]]:
+    if not instance or not instance.body_rig or not instance.body_dna_reader:
+        return []
+
+    existing_joint_group_bones = get_solver_joint_group_bones(instance)
+
+    # Build a map of bone names to joint indices
+    bone_to_joint_index: dict[str, int] = {}
+    for joint_index in range(instance.body_dna_reader.getJointCount()):
+        joint_name = instance.body_dna_reader.getJointName(joint_index)
+        bone_to_joint_index[joint_name] = joint_index
+
+    available_bones: list[tuple[str, int, bool]] = []
+
+    for pose_bone in instance.body_rig.pose.bones:
+        bone_name = pose_bone.name
+
+        # Skip driver bones, swing bones, and twist bones
+        if bone_name in instance.body_driver_bone_names:
+            continue
+        if bone_name in instance.body_swing_bone_names:
+            continue
+        if bone_name in instance.body_twist_bone_names:
+            continue
+
+        joint_index = bone_to_joint_index.get(bone_name, -1)
+        is_in_existing = bone_name in existing_joint_group_bones
+
+        available_bones.append((bone_name, joint_index, is_in_existing))
+
+    # Sort: existing joint group bones first, then alphabetically
+    available_bones.sort(key=lambda x: (not x[2], x[0]))
+
+    return available_bones
+
+
+def validate_and_update_solver_joint_group(
+    instance: "RigInstance",
+    new_driven_bone_names: list[str],
+) -> tuple[bool, str]:
+    if not instance or not instance.body_rig:
+        return False, "No active rig instance or body rig found."
+
+    solver = get_active_solver(instance)
+    if not solver:
+        return False, "No active RBF solver found."
+
+    # Get existing bones in the joint group
+    existing_bones = get_solver_joint_group_bones(instance)
+    new_bones = set(new_driven_bone_names) - existing_bones
+
+    if not new_bones:
+        # All bones are already in the joint group, no update needed
+        return True, ""
+
+    # New bones need to be added to all existing poses
+    # We'll add them with their rest pose transforms (zero deltas)
+    logger.info(
+        f"Adding {len(new_bones)} new bones to solver joint group: {new_bones}. "
+        "Existing poses will be updated with rest pose values for these bones."
+    )
+
+    # Ensure the body is initialized to get rest pose data
+    if not instance.body_initialized:
+        instance.body_initialize(update_rbf_solver_list=False)
+
+    # Add the new bones to all existing poses with rest pose transforms
+    for pose in solver.poses:
+        # Skip the default pose - its driven data is auto-populated for UI display only
+        if pose.name == "default":
+            continue
+
+        for bone_name in new_bones:
+            # Check if this bone is already in the pose
+            if any(d.name == bone_name for d in pose.driven):
+                continue
+
+            # Add new driven entry with rest pose transforms (zero deltas)
+            driven = pose.driven.add()
+            driven.name = bone_name
+            driven.pose_index = pose.pose_index
+            driven.data_type = "BONE"
+            driven.location = [0.0, 0.0, 0.0]
+            driven.euler_rotation = [0.0, 0.0, 0.0]
+            driven.quaternion_rotation = [1.0, 0.0, 0.0, 0.0]
+            driven.scale = [pose.scale_factor, pose.scale_factor, pose.scale_factor]
+
+            # Find the joint index for this bone
+            for joint_index in range(instance.body_dna_reader.getJointCount()):
+                joint_name = instance.body_dna_reader.getJointName(joint_index)
+                if joint_name == bone_name:
+                    driven.joint_index = joint_index
+                    break
+
+            logger.debug(f"Added bone '{bone_name}' to pose '{pose.name}' with rest pose transforms.")
+
+    return True, f"Added {len(new_bones)} new bones to the solver's joint group."
+
+
+def remove_driven_bone_from_solver(
+    instance: "RigInstance",
+    bone_names_to_remove: set[str],
+) -> tuple[bool, str]:
+    if not instance or not instance.body_rig:
+        return False, "No active rig instance or body rig found."
+
+    solver = get_active_solver(instance)
+    if not solver:
+        return False, "No active RBF solver found."
+
+    # Get existing bones in the joint group
+    existing_bones = get_solver_joint_group_bones(instance)
+
+    # Filter to only bones that actually exist in the joint group
+    bones_to_remove = bone_names_to_remove & existing_bones
+
+    if not bones_to_remove:
+        return False, "None of the selected bones are in the solver's joint group."
+
+    # Check that we're not removing ALL bones - at least one must remain
+    remaining_bones = existing_bones - bones_to_remove
+    if not remaining_bones:
+        return False, "Cannot remove all driven bones. At least one driven bone must remain in the solver."
+
+    removed_count = 0
+
+    # Remove the bones from all poses
+    for pose in solver.poses:
+        # Skip the default pose - its driven data is auto-populated for UI display only
+        if pose.name == "default":
+            # Remove any driven entries for the default pose. This is strictly for UI display purposes
+            for i, driven in enumerate(pose.driven):
+                if driven.name in bones_to_remove:
+                    pose.driven.remove(i)
+            # Then skip further processing, as the default pose is not stored in DNA
+            continue
+
+        # Find and remove matching driven entries (iterate in reverse to safely remove)
+        indices_to_remove = []
+        for i, driven in enumerate(pose.driven):
+            if driven.name in bones_to_remove:
+                indices_to_remove.append(i)
+
+        # Remove in reverse order to maintain valid indices
+        for i in reversed(indices_to_remove):
+            pose.driven.remove(i)
+            removed_count += 1
+
+        # Update the active index if needed
+        if pose.driven_active_index >= len(pose.driven):
+            pose.driven_active_index = max(0, len(pose.driven) - 1)
+
+    logger.info(
+        f"Removed {len(bones_to_remove)} bones from solver joint group: {bones_to_remove}. "
+        f"Total driven entries removed across all poses: {removed_count}."
+    )
+
+    return True, f"Removed {len(bones_to_remove)} bones from the solver's joint group."
+
+
+def add_driven_bones_to_solver(
+    instance: "RigInstance",
+    bone_names_to_add: list[str],
+    update_active_pose_transforms: bool = False,
+) -> tuple[bool, str]:
+    if not instance or not instance.body_rig:
+        return False, "No active rig instance or body rig found."
+
+    if not bone_names_to_add:
+        return False, "No bones specified to add."
+
+    # Get existing bones in the joint group
+    existing_bones = get_solver_joint_group_bones(instance)
+
+    # Combine existing and new bones (preserving order, no duplicates)
+    all_driven_bones = list(existing_bones) + [name for name in bone_names_to_add if name not in existing_bones]
+
+    # Use the validation function to add bones to all poses
+    valid, message = validate_and_update_solver_joint_group(instance, all_driven_bones)
+    if not valid:
+        return False, message
+
+    # Determine which bones were actually new
+    new_bones = [name for name in bone_names_to_add if name not in existing_bones]
+
+    if not new_bones:
+        return True, "All specified bones are already in the solver's joint group."
+
+    # Optionally update the active pose with actual bone transforms
+    if update_active_pose_transforms:
+        pose = get_active_pose(instance)
+        if pose:
+            for bone_name in new_bones:
+                pose_bone = instance.body_rig.pose.bones.get(bone_name)
+                if not pose_bone:
+                    continue
+
+                # Find the driven entry for this bone
+                driven = None
+                for d in pose.driven:
+                    if d.name == bone_name:
+                        driven = d
+                        break
+
+                if driven:
+                    # Update with current bone transforms
+                    set_driven_bone_data(instance=instance, pose=pose, driven=driven, pose_bone=pose_bone, new=True)
+
+            # Set the active driven to the last added bone
+            if new_bones:
+                for i, driven in enumerate(pose.driven):
+                    if driven.name == new_bones[-1]:
+                        pose.driven_active_index = i
+                        break
+
+    logger.info(f"Added {len(new_bones)} bones to solver joint group: {new_bones}.")
+    return True, f"Added {len(new_bones)} bones to the solver's joint group."

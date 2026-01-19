@@ -2,6 +2,8 @@ import logging
 import os
 
 import bpy
+
+# This import is necessary to register custom icons
 import bpy.utils.previews  # pyright: ignore[reportUnusedImport]
 
 from . import constants, manual_map, operators, properties, rig_instance, utilities
@@ -19,7 +21,7 @@ logger = logging.getLogger(constants.ToolInfo.NAME)
 bl_info = {
     "name": "MetaHuman DNA",
     "author": "Poly Hammer",
-    "version": (0, 5, 6),
+    "version": (0, 5, 11),
     "blender": (4, 5, 0),
     "location": "File > Import > MetaHuman DNA",
     "description": (
@@ -43,8 +45,6 @@ pose_editor_operator_classes = [
     pose_editor_operators.DuplicateRBFPose,
     pose_editor_operators.RemoveRBFPose,
     pose_editor_operators.UpdateRBFPose,
-    pose_editor_operators.AddRBFDriver,
-    pose_editor_operators.RemoveRBFDriver,
     pose_editor_operators.AddRBFDriven,
     pose_editor_operators.RemoveRBFDriven,
 ]
@@ -55,6 +55,7 @@ pose_editor_ui_classes = [
     pose_editor_ui.META_HUMAN_DNA_PT_pose_editor_drivers_sub_panel,
     pose_editor_ui.META_HUMAN_DNA_PT_pose_editor_driven_sub_panel,
     pose_editor_ui.META_HUMAN_DNA_PT_pose_editor_footer_sub_panel,
+    pose_editor_ui.META_HUMAN_DNA_UL_bone_selection,
     pose_editor_ui.META_HUMAN_DNA_UL_rbf_solvers,
     pose_editor_ui.META_HUMAN_DNA_UL_rbf_poses,
     pose_editor_ui.META_HUMAN_DNA_UL_rbf_drivers,
