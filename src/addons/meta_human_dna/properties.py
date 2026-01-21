@@ -17,7 +17,7 @@ from .ui import callbacks
 
 logger = logging.getLogger(__name__)
 
-preview_collections = {}
+face_pose_preview_collections = {}
 
 
 def get_dna_import_property_group_base_class() -> type:
@@ -74,13 +74,29 @@ class MetahumanAddonProperties:
         description="This will send anonymous usage data to Poly Hammer to help improve the addon and help catch bugs",
     )  # pyright: ignore[reportInvalidTypeForm]
 
-    show_pose_editor_viewport_overlay: bpy.props.BoolProperty(
+    # ------- Pose Editor Properties -------
+
+    pose_editor_show_viewport_overlay: bpy.props.BoolProperty(
         name="Show Pose Editor Viewport Overlay",
         default=True,
         description="Display an overlay in the 3D viewport when the Pose Editor is in edit mode",
     )  # pyright: ignore[reportInvalidTypeForm]
 
-    enable_auto_dna_backups: bpy.props.BoolProperty(
+    pose_editor_solver_mirror_regex_pattern: bpy.props.StringProperty(
+        name="Solver Mirror Regex Pattern", default=r"(?P<prefix>.+)?(?P<side>_l_)(?P<suffix>.+)?"
+    )  # pyright: ignore[reportInvalidTypeForm]
+
+    pose_editor_pose_mirror_regex_pattern: bpy.props.StringProperty(
+        name="Pose Mirror Regex Pattern", default=r"(?P<prefix>.+)?(?P<side>_l_)(?P<suffix>.+)?"
+    )  # pyright: ignore[reportInvalidTypeForm]
+
+    pose_editor_bone_mirror_regex_pattern: bpy.props.StringProperty(
+        name="Bone Mirror Regex Pattern", default=r"(?P<prefix>.+)?(?P<side>_l)"
+    )  # pyright: ignore[reportInvalidTypeForm]
+
+    # ------- Backup Manager Properties -------
+
+    dna_backups_enable: bpy.props.BoolProperty(
         name="Enable Auto DNA Backups",
         default=True,
         description=(
@@ -89,7 +105,7 @@ class MetahumanAddonProperties:
         ),
     )  # pyright: ignore[reportInvalidTypeForm]
 
-    dna_backup_folder_path: bpy.props.StringProperty(
+    dna_backups_folder_path: bpy.props.StringProperty(
         default=str(DEFAULT_BACKUPS_FOLDER),
         description=(
             "The folder location of the DNA backup files. Modify this if you want to store backups in a custom "
@@ -101,12 +117,15 @@ class MetahumanAddonProperties:
         options={"PATH_SUPPORTS_BLEND_RELATIVE"},
     )  # pyright: ignore[reportInvalidTypeForm]
 
-    max_dna_backups: bpy.props.IntProperty(
+    dna_backups_max: bpy.props.IntProperty(
         name="Maximum Backups",
         default=5,
         min=1,
         max=50,
-        description="Maximum number of DNA backups to keep. Older backups will be automatically deleted",
+        description=(
+            "Maximum number of automatic DNA backups to keep. Older backups will be automatically deleted "
+            "(Manually created backups are not automatically deleted)"
+        ),
     )  # pyright: ignore[reportInvalidTypeForm]
 
     next_metrics_consent_timestamp: bpy.props.FloatProperty(default=0.0)  # pyright: ignore[reportInvalidTypeForm]
@@ -261,8 +280,7 @@ class MetahumanSceneProperties(bpy.types.PropertyGroup):
 
 def register():
     """
-    Registers the property group class and adds it to the window manager context when the
-    addon is enabled.
+    Registers the addon's property group classes when the addon is enabled.
     """
     # register the list data classes first, since the scene property groups depends on them
     bpy.utils.register_class(OutputData)
@@ -283,6 +301,7 @@ def register():
     # ----------------- Pose Editor Properties -----------------
     from .editors.pose_editor import properties as pose_editor_properties
 
+    pose_editor_properties.register()
     bpy.utils.register_class(pose_editor_properties.RBFDrivenBoneSelectionItem)
     bpy.utils.register_class(pose_editor_properties.RBFDriverData)
     bpy.utils.register_class(pose_editor_properties.RBFDrivenData)
@@ -322,18 +341,17 @@ def register():
     face_pose_previews_collection = bpy.utils.previews.new()
     face_pose_previews_collection.face_pose_previews_root_folder = ""  # type: ignore[attr-defined]
     face_pose_previews_collection.face_pose_previews = ()  # type: ignore[attr-defined]
-    preview_collections["face_poses"] = face_pose_previews_collection
+    face_pose_preview_collections["face_poses"] = face_pose_previews_collection
 
 
 def unregister():
     """
-    Un-registers the property group class and deletes it from the window manager context when the
-    addon is disabled.
+    Un-registers the addon's property group classes when the addon is disabled.
     """
     # remove the pose previews collections
-    for preview_collection in preview_collections.values():
+    for preview_collection in face_pose_preview_collections.values():
         bpy.utils.previews.remove(preview_collection)
-    preview_collections.clear()
+    face_pose_preview_collections.clear()
 
     window_manager_property_class = bpy.types.PropertyGroup.bl_rna_get_subclass_py(
         MetahumanWindowMangerProperties.__name__
@@ -365,6 +383,7 @@ def unregister():
         bpy.utils.unregister_class(pose_editor_properties.RBFDrivenData)
         bpy.utils.unregister_class(pose_editor_properties.RBFDriverData)
         bpy.utils.unregister_class(pose_editor_properties.RBFDrivenBoneSelectionItem)
+        pose_editor_properties.unregister()
 
         # ----------------- Backup Manager Properties -----------------
         if "dna_backup_list" in RigInstance.__annotations__:

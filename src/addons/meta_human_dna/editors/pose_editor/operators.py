@@ -14,7 +14,9 @@ from ...dna_io import get_dna_reader, get_dna_writer
 
 # type checking imports
 from ...typing import *  # noqa: F403
-from . import core
+from ...ui.toast import clear_toasts, toast_info, toast_success, toast_warning
+from . import change_tracker, core
+from .viewport_overlay import register_draw_handler, unregister_draw_handler
 
 
 logger = logging.getLogger(__name__)
@@ -51,11 +53,6 @@ def set_new_pose_name(self: "AddRBFPose", value: str):
 
 
 class RBFEditorOperatorBase(bpy.types.Operator):
-    solver_index: bpy.props.IntProperty(default=0)  # pyright: ignore[reportInvalidTypeForm]
-    pose_index: bpy.props.IntProperty(default=0)  # pyright: ignore[reportInvalidTypeForm]
-    driver_index: bpy.props.IntProperty(default=0)  # pyright: ignore[reportInvalidTypeForm]
-    driven_index: bpy.props.IntProperty(default=0)  # pyright: ignore[reportInvalidTypeForm]
-
     def validate(self, context: "Context", instance: "RigInstance") -> tuple[bool, str]:
         return True, ""
 
@@ -76,23 +73,92 @@ class RBFEditorOperatorBase(bpy.types.Operator):
 
 
 class AddRBFSolver(RBFEditorOperatorBase):
-    """Add a new RBF Solver"""
+    """Add a new RBF Solver based on the selected pose bone."""
 
     bl_idname = "meta_human_dna.add_rbf_solver"
     bl_label = "Add RBF Solver"
+    bl_options = {"REGISTER", "UNDO"}
+
+    @classmethod
+    def poll(cls, context: "Context") -> bool:
+        instance = utilities.get_active_rig_instance()
+        if not instance or not instance.body_rig:
+            return False
+        # Must be in edit mode for the solver and have a pose bone selected
+        if not instance.editing_rbf_solver:
+            return False
+        return context.active_pose_bone is not None
+
+    def validate(self, context: "Context", instance: "RigInstance") -> tuple[bool, str]:
+        if not context.active_pose_bone:
+            return False, "No pose bone selected. Please select a bone to use as the driver for the new solver."
+
+        driver_bone = context.active_pose_bone
+        driver_bone_name = driver_bone.name
+
+        # Check that the selected bone belongs to the body rig
+        if driver_bone.id_data != instance.body_rig:
+            return False, f'Bone "{driver_bone_name}" does not belong to the body rig.'
+
+        # Delegate to core validation
+        return core.validate_add_rbf_solver(instance, driver_bone_name)
 
     def run(self, instance: "RigInstance"):
-        pass
+        driver_bone = bpy.context.active_pose_bone
+        if not driver_bone:
+            return
+
+        # Get the driver quaternion from the pose bone
+        driver_quaternion = tuple(driver_bone.rotation_quaternion[:])
+
+        # Delegate to core function
+        success, message, _ = core.add_rbf_solver(
+            instance=instance,
+            driver_bone_name=driver_bone.name,
+            driver_quaternion=driver_quaternion,  # pyright: ignore[reportArgumentType]
+        )
+
+        if not success:
+            self.report({"ERROR"}, message)
+            return
+
+        # Update change tracking and show toast
+        change_tracker.update_tracking(instance)
+        toast_success(f"Added solver for '{driver_bone.name}'", duration=2.5)
 
 
 class RemoveRBFSolver(RBFEditorOperatorBase):
-    """Remove the selected RBF Solver"""
+    """Remove the selected RBF Solver."""
 
     bl_idname = "meta_human_dna.remove_rbf_solver"
     bl_label = "Remove RBF Solver"
+    bl_options = {"REGISTER", "UNDO"}
+
+    @classmethod
+    def poll(cls, context: "Context") -> bool:  # noqa: ARG003
+        instance = utilities.get_active_rig_instance()
+        if not instance or not instance.body_rig:
+            return False
+        # Must be in edit mode and have at least one solver
+        if not instance.editing_rbf_solver:
+            return False
+        return len(instance.rbf_solver_list) > 0
 
     def run(self, instance: "RigInstance"):
-        pass
+        # Get the solver name before removal for the toast
+        solver = core.get_active_solver(instance)
+        solver_name = solver.name if solver else "solver"
+
+        # Delegate to core function
+        success, message = core.remove_rbf_solver(instance)
+
+        if not success:
+            self.report({"ERROR"}, message)
+            return
+
+        # Update change tracking and show toast
+        change_tracker.update_tracking(instance)
+        toast_warning(f"Removed solver '{solver_name}'", duration=2.5)
 
 
 class EvaluateRBFSolvers(RBFEditorOperatorBase):
@@ -112,11 +178,21 @@ class RevertRBFSolver(RBFEditorOperatorBase):
     bl_label = "Revert RBF Solver"
 
     def run(self, instance: "RigInstance"):
-        core.stop_listening_for_pose_edits()
         utilities.reset_pose(instance.body_rig)
         instance.editing_rbf_solver = False
         instance.auto_evaluate_body = True
+
+        tracker = change_tracker.get_change_tracker(instance)
+        change_count = tracker.change_count if tracker else 0
+
+        # Clear change tracking and toasts
+        change_tracker.clear_tracking(instance)
+        clear_toasts()
         bpy.ops.meta_human_dna.force_evaluate()  # type: ignore[attr-defined]
+
+        toast_warning(f"Reverted {change_count} edit(s)", duration=3.0)
+        # Unregister the draw handler after the final toast has been shown
+        bpy.app.timers.register(unregister_draw_handler, first_interval=3.0)
 
 
 class EditRBFSolver(RBFEditorOperatorBase):
@@ -138,7 +214,11 @@ class EditRBFSolver(RBFEditorOperatorBase):
         instance.auto_evaluate_body = False
         instance.body_rig.hide_set(False)
         utilities.switch_to_pose_mode(instance.body_rig)
-        core.start_listening_for_pose_edits()
+        register_draw_handler()
+
+        # Initialize change tracking when entering edit mode
+        change_tracker.initialize_tracking(instance)
+        toast_info("Entered Pose Editor edit mode", duration=2.0)
 
 
 class CommitRBFSolverChanges(RBFEditorOperatorBase):
@@ -170,6 +250,10 @@ class CommitRBFSolverChanges(RBFEditorOperatorBase):
         if not valid:
             return False, message
 
+        valid, message = core.validate_solver_non_default_pose_with_driven_bones(instance)
+        if not valid:
+            return False, message
+
         return True, ""
 
     def run(self, instance: "RigInstance"):
@@ -178,26 +262,43 @@ class CommitRBFSolverChanges(RBFEditorOperatorBase):
 
         create_backup(instance, BackupType.POSE_EDITOR)
 
-        core.stop_listening_for_pose_edits()
-
         from ...bindings import meta_human_dna_core  # pyright: ignore[reportAttributeAccessIssue]
 
         reader = get_dna_reader(file_path=instance.body_dna_file_path)
         writer = get_dna_writer(file_path=instance.body_dna_file_path)
         data = utilities.collection_to_list(instance.rbf_solver_list)
 
+        # Get the change count before clearing for the toast message
+        tracker = change_tracker.get_change_tracker(instance)
+        change_count = tracker.change_count if tracker else 0
+
         # destroy the reader and writer instances to release file locks and
         # any memory they are using
         instance.destroy()
 
-        meta_human_dna_core.commit_rbf_data_to_dna(reader=reader, writer=writer, data=data)
-        logger.info(f'DNA exported successfully to: "{instance.body_dna_file_path}"')
+        try:
+            meta_human_dna_core.commit_rbf_data_to_dna(reader=reader, writer=writer, data=data)
+        except ValueError as error:
+            self.report({"ERROR"}, str(error))
+            return
 
         # turn off editing mode and re-enable auto evaluation
         instance.editing_rbf_solver = False
         instance.auto_evaluate_body = True
+
+        # Clear change tracking and toasts
+        change_tracker.clear_tracking(instance)
+        clear_toasts()
+
         # re-initialize and evaluate the body rig
         instance.evaluate(component="body")
+        logger.info(f'DNA exported successfully to: "{instance.body_dna_file_path}"')
+
+        # Show success toast
+        toast_success(f"Committed {change_count} change(s) to DNA", duration=3.0)
+
+        # Unregister the draw handler after the final toast has been shown
+        bpy.app.timers.register(unregister_draw_handler, first_interval=3.0)
 
 
 class RBFPoseOperatorBase(RBFEditorOperatorBase):
@@ -208,87 +309,37 @@ class RBFPoseOperatorBase(RBFEditorOperatorBase):
         driven_bones: list[bpy.types.PoseBone],
         from_pose: "RBFPoseData | None" = None,
     ) -> "RBFPoseData | None":
-        solver = instance.rbf_solver_list[self.solver_index]
-        local_pose_index = len(solver.poses)
-        pose = solver.poses.add()
+        """
+        Add a new pose to an RBF solver.
 
-        # For new poses, we need to assign a pose_index that indicates it's a new pose.
-        # This must be >= the total DNA pose count so commit_rbf_data_to_dna knows it's new.
-        # Calculate the next available global pose index by finding the max existing index
-        # across all solvers and adding 1.
-        max_existing_pose_index = -1
-        for s in instance.rbf_solver_list:
-            for p in s.poses:
-                if p != pose:  # Don't include the pose we just added
-                    max_existing_pose_index = max(max_existing_pose_index, p.pose_index)
+        This method delegates to the core.add_rbf_pose function, which handles
+        all the logic for creating poses with proper indexing, driver/driven setup,
+        and default pose updating.
 
-        # Get the DNA pose count - new poses should have index >= this value
-        dna_pose_count = instance.body_dna_reader.getRBFPoseCount() if instance.body_dna_reader else 0
-        # The new pose index should be at least dna_pose_count, and also greater than any
-        # existing pose index (in case other new poses were added in this session)
-        new_pose_index = max(dna_pose_count, max_existing_pose_index + 1)
+        Args:
+            instance: The active rig instance.
+            pose_name: The name for the new pose.
+            driven_bones: List of Blender PoseBone objects to be driven.
+            from_pose: Optional existing pose to duplicate from.
 
-        pose.solver_index = self.solver_index
-        pose.pose_index = new_pose_index
-        pose.name = pose_name
+        Returns:
+            The newly created RBFPoseData, or None if creation failed.
+        """
+        success, message, _ = core.add_rbf_pose(
+            instance=instance,
+            pose_name=pose_name,
+            solver_index=instance.rbf_solver_list_active_index,
+            driven_bones=driven_bones,
+            from_pose=from_pose,
+        )
 
-        # copy the values from an existing pose if provided
-        if from_pose:
-            pose.joint_group_index = from_pose.joint_group_index
-            pose.target_enable = from_pose.target_enable
-            pose.scale_factor = from_pose.scale_factor
-
-        driver_bone_name = solver.name.replace(RBF_SOLVER_POSTFIX, "")
-        driver_bone = instance.body_rig.pose.bones.get(driver_bone_name)
-        if not driver_bone:
+        if not success:
+            logger.error(message)
             return None
 
-        driver = pose.drivers.add()
-        core.set_driver_bone_data(instance=instance, pose=pose, driver=driver, pose_bone=driver_bone, new=True)
-
-        # When duplicating from an existing pose, copy the driven data directly
-        # instead of reading from Blender's current bone transforms
-        if from_pose:
-            # Build a lookup of source pose's driven data by bone name
-            source_driven_lookup = {d.name: d for d in from_pose.driven}
-            for pose_bone in driven_bones:
-                driven = pose.driven.add()
-                source_driven = source_driven_lookup.get(pose_bone.name)
-                if source_driven:
-                    location = source_driven.location[:]
-                    euler_rotation = source_driven.euler_rotation[:]
-                    quaternion_rotation = source_driven.quaternion_rotation[:]
-                    scale = source_driven.scale[:]
-                    if from_pose.name == "default":
-                        location = [0.0, 0.0, 0.0]
-                        euler_rotation = [0.0, 0.0, 0.0]
-                        quaternion_rotation = [1.0, 0.0, 0.0, 0.0]
-                        scale = [1.0, 1.0, 1.0]
-
-                    # Copy all driven data from the source pose
-                    driven.name = source_driven.name
-                    driven.pose_index = pose.pose_index  # Use the new pose's index
-                    driven.joint_index = source_driven.joint_index
-                    driven.data_type = source_driven.data_type
-                    driven.location = location
-                    driven.euler_rotation = euler_rotation
-                    driven.quaternion_rotation = quaternion_rotation
-                    driven.scale = scale
-                else:
-                    # Bone not in source pose, read from current scene
-                    core.set_driven_bone_data(
-                        instance=instance, pose=pose, driven=driven, pose_bone=pose_bone, new=True
-                    )
-        else:
-            # New pose (not duplicating), read from current bone transforms
-            for pose_bone in driven_bones:
-                driven = pose.driven.add()
-                core.set_driven_bone_data(instance=instance, pose=pose, driven=driven, pose_bone=pose_bone, new=True)
-
-        # set the active pose to the new pose (use local index within solver's poses list)
-        solver.poses_active_index = local_pose_index
-
-        return pose
+        # Return the newly added pose
+        solver = instance.rbf_solver_list[instance.rbf_solver_list_active_index]
+        return solver.poses[solver.poses_active_index]
 
 
 class AddRBFPose(RBFPoseOperatorBase):
@@ -309,7 +360,7 @@ class AddRBFPose(RBFPoseOperatorBase):
             return
 
         if not instance.body_initialized:
-            instance.body_initialize()
+            instance.body_initialize(update_rbf_solver_list=False)
 
         # Use window manager to store the collection (persists across draw calls)
         wm = context.window_manager
@@ -357,7 +408,7 @@ class AddRBFPose(RBFPoseOperatorBase):
             return False, "No driven bones selected. Please select at least one driven bone."
 
         if not instance.body_initialized:
-            instance.body_initialize()
+            instance.body_initialize(update_rbf_solver_list=False)
 
         for pose_bone in driven_bones:
             if pose_bone.name in instance.body_driver_bone_names:
@@ -406,11 +457,17 @@ class AddRBFPose(RBFPoseOperatorBase):
         # Get driven bones from our selection
         driven_bones = self._get_selected_driven_bones(bpy.context)  # pyright: ignore[reportArgumentType]
 
-        self.add_pose(
+        pose_name = self.new_pose_name if self.new_pose_name else f"Pose{new_pose_index}"
+        pose = self.add_pose(
             instance=instance,
-            pose_name=self.new_pose_name if self.new_pose_name else f"Pose{new_pose_index}",
+            pose_name=pose_name,
             driven_bones=driven_bones,
         )
+
+        if pose:
+            # Update change tracking and show toast
+            change_tracker.update_tracking(instance)
+            toast_success(f"Added pose '{pose_name}'", duration=2.5)
 
     def invoke(self, context: "Context", event: bpy.types.Event) -> set[str]:
         # Populate bone selections when the dialog is opened
@@ -481,16 +538,38 @@ class DuplicateRBFPose(RBFPoseOperatorBase):
     bl_idname = "meta_human_dna.duplicate_rbf_pose"
     bl_label = "Duplicate RBF Pose"
 
+    @classmethod
+    def poll(cls, context: "Context") -> bool:  # noqa: ARG003
+        instance = utilities.get_active_rig_instance()
+        if not instance or not instance.body_rig:
+            return False
+
+        pose = core.get_active_pose(instance)
+        if not pose or pose.name == "default":
+            return False
+
+        # Must be in edit mode for the solver
+        return instance.editing_rbf_solver
+
     def run(self, instance: "RigInstance"):
-        solver = instance.rbf_solver_list[self.solver_index]
-        pose = solver.poses[self.pose_index]
+        solver = core.get_active_solver(instance)
+        if not solver:
+            return
+        pose = core.get_active_pose(instance)
+        if not pose:
+            return
 
         # Generate a unique name for the duplicated pose
         count_same_name = 1
         for existing_pose in solver.poses:
             if existing_pose.name.startswith(pose.name):
                 count_same_name += 1
-        new_pose_name = f"{pose.name}_{count_same_name}"
+
+        chunks = pose.name.split("_")
+        if len(chunks) > 2 and (chunks[-2].isdigit() and chunks[-1].isdigit()):
+            new_pose_name = "_".join(chunks[:-1]) + f"_{int(chunks[-1]) + 1}"
+        else:
+            new_pose_name = f"{pose.name}_{count_same_name}"
 
         # Copy the driven bone names from the original pose
         driven_bones = []
@@ -506,26 +585,60 @@ class DuplicateRBFPose(RBFPoseOperatorBase):
             from_pose=pose,
         )
 
+        # Update change tracking and show toast
+        change_tracker.update_tracking(instance)
+        toast_success(f"Duplicated pose '{pose.name}' to '{new_pose_name}'", duration=2.5)
 
-class UpdateRBFPose(RBFEditorOperatorBase):
-    """Update the selected RBF Pose. This includes both the driver and driven bone transforms for the current pose"""
 
-    bl_idname = "meta_human_dna.update_rbf_pose"
-    bl_label = "Update RBF Pose"
+class ApplyRBFPoseEdits(RBFEditorOperatorBase):
+    bl_idname = "meta_human_dna.apply_rbf_pose_edits"
+    bl_label = "Apply RBF Pose Edits"
+    bl_options = {"REGISTER", "UNDO"}
+    bl_description = (
+        "Apply the driven and driver bone transformations to the selected RBF Pose. "
+        "Note: changes are not committed to the .dna file until the solver changes are committed "
+        "using the 'Commit' operator."
+    )
+
+    @classmethod
+    def poll(cls, context: "Context") -> bool:  # noqa: ARG003
+        instance = utilities.get_active_rig_instance()
+        if not instance or not instance.body_rig:
+            return False
+        # Must be in edit mode for the solver
+        if not instance.editing_rbf_solver:
+            return False
+        # Must have at least one solver with poses
+        if len(instance.rbf_solver_list) == 0:
+            return False
+        solver = instance.rbf_solver_list[instance.rbf_solver_list_active_index]
+        return len(solver.poses) > 0
 
     def run(self, instance: "RigInstance"):
         # ensure the body is initialized
         if not instance.body_initialized:
             instance.body_initialize(update_rbf_solver_list=False)
 
-        solver = instance.rbf_solver_list[self.solver_index]
-        pose = solver.poses[self.pose_index]
+        solver = core.get_active_solver(instance)
+        if not solver:
+            return
+        pose = core.get_active_pose(instance)
+        if not pose:
+            return
+
+        # Update the change tracker
+        tracker = change_tracker.get_change_tracker(instance)
+        change_count = tracker.change_count if tracker else 0
 
         # Update all the driver bone data for the pose
         for driver in pose.drivers:
             driver_bone = instance.body_rig.pose.bones.get(driver.name)
             if driver_bone:
-                core.set_driver_bone_data(instance=instance, pose=pose, driver=driver, pose_bone=driver_bone)
+                update_message = core.set_driver_bone_data(
+                    instance=instance, pose=pose, driver=driver, pose_bone=driver_bone
+                )
+                if update_message:
+                    toast_info(update_message, duration=2.5)
             else:
                 self.report(
                     {"ERROR"},
@@ -540,13 +653,24 @@ class UpdateRBFPose(RBFEditorOperatorBase):
         for driven in pose.driven:
             driven_pose_bone = instance.body_rig.pose.bones.get(driven.name)
             if driven_pose_bone:
-                core.set_driven_bone_data(instance=instance, pose=pose, driven=driven, pose_bone=driven_pose_bone)
+                update_message = core.set_driven_bone_data(
+                    instance=instance, pose=pose, driven=driven, pose_bone=driven_pose_bone
+                )
+                if update_message:
+                    toast_info(update_message, duration=2.5)
             else:
                 logger.warning(
                     f'Driven bone "{driven.name}" was not found in armature when '
                     f'updating RBF Pose "{pose.name}". It will be deleted from '
                     "the pose when this data is committed to the dna."
                 )
+
+        # Update the change tracker
+        current_tracker = change_tracker.update_tracking(instance)
+        current_change_count = current_tracker.change_count - change_count
+        if current_change_count > 0:
+            # Show toast notification
+            toast_success(f"Applied {current_change_count} edits to pose '{pose.name}'", duration=2.5)
 
 
 class RemoveRBFPose(RBFEditorOperatorBase):
@@ -567,9 +691,18 @@ class RemoveRBFPose(RBFEditorOperatorBase):
 
     def run(self, instance: "RigInstance"):
         solver = instance.rbf_solver_list[instance.rbf_solver_list_active_index]
+
+        # Get pose name before removal for toast
+        pose = solver.poses[solver.poses_active_index]
+        pose_name = pose.name
+
         solver.poses.remove(solver.poses_active_index)
         to_index = min(solver.poses_active_index, len(solver.poses) - 1)
         solver.poses_active_index = to_index
+
+        # Update change tracking and show toast
+        change_tracker.update_tracking(instance)
+        toast_warning(f"Removed pose '{pose_name}'", duration=2.5)
 
 
 class AddRBFDriven(RBFEditorOperatorBase):
@@ -597,6 +730,10 @@ class AddRBFDriven(RBFEditorOperatorBase):
         if not instance.body_initialized:
             instance.body_initialize(update_rbf_solver_list=False)
 
+        pose = core.get_active_pose(instance)
+        if not pose:
+            return False, "No active pose found in the solver."
+
         for pose_bone in context.selected_pose_bones:
             if pose_bone.name in instance.body_driver_bone_names:
                 return False, f'Bone "{pose_bone.name}" is a driver bone and cannot be added as a driven bone.'
@@ -606,6 +743,8 @@ class AddRBFDriven(RBFEditorOperatorBase):
                 return False, f'Bone "{pose_bone.name}" is a twist bone and cannot be added as a driven bone.'
             if pose_bone.id_data != instance.body_rig:
                 return False, f'Bone "{pose_bone.name}" does not belong to the body rig and cannot be added.'
+            if pose_bone.name in [d.name for d in pose.driven]:
+                return False, f'Bone "{pose_bone.name}" is already a driven bone in the "{pose.name}" pose.'
 
         return True, ""
 
@@ -622,7 +761,9 @@ class AddRBFDriven(RBFEditorOperatorBase):
             self.report({"ERROR"}, message)
             return
 
-        self.report({"INFO"}, message)
+        # Update change tracking and show toast
+        change_tracker.update_tracking(instance)
+        toast_success(message=message, duration=2.5)
 
 
 class RemoveRBFDriven(RBFEditorOperatorBase):
@@ -675,4 +816,6 @@ class RemoveRBFDriven(RBFEditorOperatorBase):
                 self.report({"ERROR"}, message)
                 return
 
-        self.report({"INFO"}, message)
+            # Update change tracking and show toast
+            change_tracker.update_tracking(instance)
+            toast_warning(message=f"Removed driven bone '{active_driven.name}'", duration=2.5)

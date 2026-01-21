@@ -9,6 +9,7 @@ from bl_ui.generic_ui_list import draw_ui_list
 # local imports
 from ...typing import *  # noqa: F403
 from ...ui.view_3d import RigInstanceDependentPanel, valid_rig_instance_exists
+from .function_curves import get_function_preview_icon
 
 
 class META_HUMAN_DNA_UL_bone_selection(bpy.types.UIList):
@@ -158,10 +159,7 @@ class META_HUMAN_DNA_PT_pose_editor(bpy.types.Panel):
             instance.rbf_solver_list[active_rbf_solver_index] if len(instance.rbf_solver_list) > 0 else None
         )
 
-        if not active_rbf_solver:
-            return
-
-        if not instance.editing_rbf_solver:
+        if not instance.editing_rbf_solver and active_rbf_solver:
             row = self.layout.row()
             row.label(text="Poses:")
             row = self.layout.row()
@@ -180,13 +178,8 @@ class META_HUMAN_DNA_PT_pose_editor(bpy.types.Panel):
 
         if instance.editing_rbf_solver:
             solver_row = self.layout.row(align=True)
-            solver_row.operator(
-                "meta_human_dna.add_rbf_solver", icon="ADD", text=""
-            ).solver_index = active_rbf_solver_index
-            solver_row.operator(
-                "meta_human_dna.remove_rbf_solver", icon="REMOVE", text=""
-            ).solver_index = active_rbf_solver_index
-            solver_row.operator("meta_human_dna.evaluate_rbf_solvers", icon="FILE_REFRESH", text="")
+            solver_row.operator("meta_human_dna.add_rbf_solver", icon="ADD", text="")
+            solver_row.operator("meta_human_dna.remove_rbf_solver", icon="REMOVE", text="")
 
 
 class META_HUMAN_DNA_PT_pose_editor_footer_sub_panel(RigInstanceDependentPanel):
@@ -263,8 +256,37 @@ class META_HUMAN_DNA_PT_pose_editor_solver_settings_sub_panel(RbfEditorSubPanelB
             instance.rbf_solver_list[active_rbf_solver_index] if len(instance.rbf_solver_list) > 0 else None
         )
 
-        if not active_rbf_solver:
+        if not active_rbf_solver or not context.area:
             return
+
+        # Display function type selector
+        split = self.layout.split(factor=0.45)
+        split.label(text="Function Type:")
+        split.prop(active_rbf_solver, "function_type", text="")
+
+        # Display the curve visualization as a simple image preview
+        # Calculate width based on UI region
+        region_width = 285  # Default fallback
+        for region in context.area.regions:
+            if region.type == "UI":
+                region_width = region.width
+                break
+
+        # Calculate preview dimensions - square 1:1 aspect ratio
+        # Account for scrollbar (~20px) and panel margins (~20px)
+        preview_size = max(100, region_width - 40)
+        preview_width = preview_size
+        preview_height = preview_size  # 1:1 square aspect ratio
+
+        # Get preview at the calculated size
+        icon_id = get_function_preview_icon(active_rbf_solver.function_type, preview_width, preview_height)
+
+        # Calculate scale for template_icon (scale * 32 = display size)
+        icon_scale = preview_width / 12.0
+
+        row = self.layout.row()
+        row.scale_y = 0.6
+        row.template_icon(icon_value=icon_id, scale=icon_scale)
 
         split = self.layout.split(factor=0.45)
         split.label(text="Mode:")
@@ -276,12 +298,11 @@ class META_HUMAN_DNA_PT_pose_editor_solver_settings_sub_panel(RbfEditorSubPanelB
         split.label(text="Normalize Method:")
         split.prop(active_rbf_solver, "normalize_method", text="")
         split = self.layout.split(factor=0.45)
-        split.label(text="Function Type:")
-        split.prop(active_rbf_solver, "function_type", text="")
         split = self.layout.split(factor=0.45)
         split.label(text="Twist Axis:")
         split.prop(active_rbf_solver, "twist_axis", text="")
         row = self.layout.row()
+        row.enabled = not active_rbf_solver.automatic_radius
         row.prop(active_rbf_solver, "radius", text="Radius")
         row = self.layout.row()
         row.prop(active_rbf_solver, "weight_threshold", text="Weight Threshold")
@@ -325,13 +346,8 @@ class META_HUMAN_DNA_PT_pose_editor_poses_sub_panel(RbfEditorSubPanelBase):
         )
         if instance.editing_rbf_solver:
             poses_row = self.layout.row(align=True)
-            op = poses_row.operator("meta_human_dna.add_rbf_pose", icon="ADD", text="")
-            op.solver_index = active_rbf_solver_index
-            op.pose_index = active_rbf_solver.poses_active_index
-
-            op = poses_row.operator("meta_human_dna.remove_rbf_pose", icon="REMOVE", text="")
-            op.solver_index = active_rbf_solver_index
-            op.pose_index = active_rbf_solver.poses_active_index
+            poses_row.operator("meta_human_dna.add_rbf_pose", icon="ADD", text="")
+            poses_row.operator("meta_human_dna.remove_rbf_pose", icon="REMOVE", text="")
             active_rbf_pose_index = active_rbf_solver.poses_active_index
             active_rbf_pose = (
                 active_rbf_solver.poses[active_rbf_pose_index] if len(active_rbf_solver.poses) > 0 else None
@@ -339,20 +355,19 @@ class META_HUMAN_DNA_PT_pose_editor_poses_sub_panel(RbfEditorSubPanelBase):
             if not active_rbf_pose:
                 return
 
-            if active_rbf_pose.driven_active_index >= 0 and len(active_rbf_pose.driven) > 0:
-                op = poses_row.operator("meta_human_dna.update_rbf_pose", icon="CHECKMARK", text="")
-                op.solver_index = active_rbf_solver_index
-                op.pose_index = active_rbf_pose_index
-                op.driven_index = active_rbf_pose.driven_active_index
+            poses_row.operator("meta_human_dna.evaluate_rbf_solvers", icon="FILE_REFRESH", text="")
 
             # Push the select all button to the right
             sub = poses_row.row(align=True)
             sub.alignment = "RIGHT"
-            op = sub.operator("meta_human_dna.duplicate_rbf_pose", icon="DUPLICATE", text="")
-            op.solver_index = active_rbf_solver_index
-            op.pose_index = active_rbf_pose_index
+            sub.operator("meta_human_dna.duplicate_rbf_pose", icon="DUPLICATE", text="")
 
             sub.separator(factor=1.5)
+
+            if active_rbf_pose.driven_active_index >= 0 and len(active_rbf_pose.driven) > 0:
+                row = self.layout.row()
+                row.scale_y = 1.5
+                row.operator("meta_human_dna.apply_rbf_pose_edits", icon="CHECKMARK", text="Apply Pose Transform Edits")
 
             # TODO: Maybe Re-enable when functionality is needed?
             # split = self.layout.split()  # noqa: ERA001
@@ -399,12 +414,40 @@ class META_HUMAN_DNA_PT_pose_editor_drivers_sub_panel(RbfEditorSubPanelBase):
         )
 
 
-class META_HUMAN_DNA_PT_pose_editor_driven_sub_panel(RbfEditorSubPanelBase):
+class META_HUMAN_DNA_PT_pose_editor_driven_sub_panel(bpy.types.Panel):
     bl_parent_id = "META_HUMAN_DNA_PT_pose_editor"
     bl_label = "Driven"
     bl_space_type = "VIEW_3D"
     bl_region_type = "UI"
     bl_category = "MetaHuman DNA"
+
+    @classmethod
+    def poll(cls, context: "Context") -> bool:
+        error = valid_rig_instance_exists(context, ignore_face_board=True)
+        if not error:
+            properties = context.scene.meta_human_dna
+            if not len(properties.rig_instance_list) > 0:
+                return False
+
+            properties = context.scene.meta_human_dna
+            active_index = properties.rig_instance_list_active_index
+            instance = properties.rig_instance_list[active_index]
+
+            active_rbf_solver_index = instance.rbf_solver_list_active_index
+            active_rbf_solver = (
+                instance.rbf_solver_list[active_rbf_solver_index] if len(instance.rbf_solver_list) > 0 else None
+            )
+
+            if not active_rbf_solver:
+                return False
+
+            active_pose_index = active_rbf_solver.poses_active_index
+            active_pose = active_rbf_solver.poses[active_pose_index] if len(active_rbf_solver.poses) > 0 else None
+            if not active_pose or len(active_pose.driven) == 0:
+                return False
+
+            return instance.editing_rbf_solver
+        return False
 
     def draw(self, context: "Context"):
         if not self.layout:
@@ -441,12 +484,5 @@ class META_HUMAN_DNA_PT_pose_editor_driven_sub_panel(RbfEditorSubPanelBase):
         column = self.layout.column()
         driven_row = column.row(align=True)
 
-        op = driven_row.operator("meta_human_dna.add_rbf_driven", icon="ADD", text="")
-        op.solver_index = active_rbf_solver_index
-        op.pose_index = active_rbf_pose_index
-        op.driven_index = active_rbf_pose.driven_active_index
-
-        op = driven_row.operator("meta_human_dna.remove_rbf_driven", icon="REMOVE", text="")
-        op.solver_index = active_rbf_solver_index
-        op.pose_index = active_rbf_pose_index
-        op.driven_index = active_rbf_pose.driven_active_index
+        driven_row.operator("meta_human_dna.add_rbf_driven", icon="ADD", text="")
+        driven_row.operator("meta_human_dna.remove_rbf_driven", icon="REMOVE", text="")

@@ -36,17 +36,17 @@ def get_backup_folder(instance: "RigInstance") -> Path:
     """
     addon_preferences = get_addon_preferences()
     if addon_preferences:
-        if not addon_preferences.dna_backup_folder_path.startswith("//"):
+        if not addon_preferences.dna_backups_folder_path.startswith("//"):
             # Absolute path
-            backup_base = Path(addon_preferences.dna_backup_folder_path)
+            backup_base = Path(addon_preferences.dna_backups_folder_path)
         elif (
-            addon_preferences.dna_backup_folder_path.startswith("//")
+            addon_preferences.dna_backups_folder_path.startswith("//")
             and Path(instance.head_dna_file_path).parent == Path(instance.body_dna_file_path).parent
         ):
             # Paths can be set relative to the source dna files
             backup_base = Path(
                 instance.head_dna_file_path
-            ).parent / addon_preferences.dna_backup_folder_path.removeprefix("//")
+            ).parent / addon_preferences.dna_backups_folder_path.removeprefix("//")
         else:
             # Otherwise use the default temp folder
             backup_base = DEFAULT_BACKUPS_FOLDER
@@ -56,7 +56,6 @@ def get_backup_folder(instance: "RigInstance") -> Path:
         # have the same name but are in different folders on the system.
         hash_name = file_path_hash(Path(instance.body_dna_file_path or instance.head_dna_file_path))
         instance_backup_base = backup_base / f"{instance.name}-{str(hash_name).strip('-')}"
-        instance_backup_base.mkdir(parents=True, exist_ok=True)
         return instance_backup_base
 
     raise RuntimeError("Could not retrieve addon preferences for backup folder path")
@@ -71,7 +70,7 @@ def is_auto_backup_enabled() -> bool:
     """
     preferences = get_addon_preferences()
     if preferences:
-        return preferences.enable_auto_dna_backups
+        return preferences.dna_backups_enable
     return False
 
 
@@ -84,7 +83,7 @@ def get_max_backups() -> int:
     """
     preferences = get_addon_preferences()
     if preferences:
-        return preferences.max_dna_backups
+        return preferences.dna_backups_max
     return 5
 
 
@@ -281,11 +280,36 @@ def delete_backup(instance: "RigInstance", backup_id: str) -> bool:
         return False
 
 
+def _is_manual_backup(backup_folder: Path) -> bool:
+    """
+    Check if a backup folder contains a manual backup.
+
+    Args:
+        backup_folder: Path to the backup folder.
+
+    Returns:
+        True if the backup is a manual backup, False otherwise.
+    """
+    import json
+
+    metadata_path = backup_folder / "metadata.json"
+    if not metadata_path.exists():
+        return False
+
+    try:
+        with metadata_path.open(encoding="utf-8") as f:
+            metadata = json.load(f)
+        return metadata.get("backup_type") == BackupType.MANUAL.value
+    except Exception:
+        return False
+
+
 def cleanup_old_backups(instance: "RigInstance") -> None:
     """
     Remove old backups that exceed the maximum count for a specific instance.
 
-    Keeps the most recent backups based on the max_dna_backups preference.
+    Keeps the most recent backups based on the dna_backups_max preference.
+    Manual backups are excluded from automatic cleanup and will not be deleted.
 
     Args:
         instance: The RigLogicInstance whose old backups to clean up.
@@ -297,15 +321,18 @@ def cleanup_old_backups(instance: "RigInstance") -> None:
         return
 
     # Get all backup folders sorted by name (which includes timestamp)
-    backup_folders = sorted(
+    all_backup_folders = sorted(
         [d for d in instance_backup_folder.iterdir() if d.is_dir()],
         key=lambda x: x.name,
         reverse=True,  # Newest first
     )
 
-    # Delete excess backups
-    if len(backup_folders) > max_backups:
-        folders_to_delete = backup_folders[max_backups:]
+    # Filter out manual backups - they should not be automatically deleted
+    auto_backup_folders = [folder for folder in all_backup_folders if not _is_manual_backup(folder)]
+
+    # Delete excess automatic backups only
+    if len(auto_backup_folders) > max_backups:
+        folders_to_delete = auto_backup_folders[max_backups:]
         for folder in folders_to_delete:
             backup_id = folder.name
             delete_backup(instance, backup_id)
@@ -365,7 +392,11 @@ def sync_backup_list_with_disk(instance: "RigInstance") -> None:
 
                     entry = backup_list.add()
                     entry.backup_id = backup_folder.name
-                    entry.timestamp = metadata.get("timestamp", backup_folder.name)[:19].replace("T", " ")
+                    entry.timestamp = (
+                        datetime.fromisoformat(metadata.get("timestamp", backup_folder.name))
+                        .strftime("%I:%M %p  %m-%d-%y")
+                        .removeprefix("0")
+                    )
                     entry.backup_type = metadata.get("backup_type", "Unknown")
                     entry.description = metadata.get("description", "Unknown")
                     entry.instance_name = metadata.get("instance_name", instance.name)

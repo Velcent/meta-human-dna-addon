@@ -6,14 +6,14 @@ import bpy
 # This import is necessary to register custom icons
 import bpy.utils.previews  # pyright: ignore[reportUnusedImport]
 
-from . import constants, manual_map, operators, properties, rig_instance, utilities
+from . import constants, key_maps, manual_map, operators, properties, rig_instance, utilities
 
 # Backup Manager
 from .editors.backup_manager import operators as backup_manager_operators, ui as backup_manager_ui
 
 # Pose Editor
 from .editors.pose_editor import operators as pose_editor_operators, ui as pose_editor_ui
-from .ui import addon_preferences, importer, menus, view_3d, viewport_overlay
+from .ui import addon_preferences, importer, menus, view_3d
 
 
 logger = logging.getLogger(constants.ToolInfo.NAME)
@@ -21,7 +21,7 @@ logger = logging.getLogger(constants.ToolInfo.NAME)
 bl_info = {
     "name": "MetaHuman DNA",
     "author": "Poly Hammer",
-    "version": (0, 5, 11),
+    "version": (0, 5, 15),
     "blender": (4, 5, 0),
     "location": "File > Import > MetaHuman DNA",
     "description": (
@@ -44,7 +44,7 @@ pose_editor_operator_classes = [
     pose_editor_operators.AddRBFPose,
     pose_editor_operators.DuplicateRBFPose,
     pose_editor_operators.RemoveRBFPose,
-    pose_editor_operators.UpdateRBFPose,
+    pose_editor_operators.ApplyRBFPoseEdits,
     pose_editor_operators.AddRBFDriven,
     pose_editor_operators.RemoveRBFDriven,
 ]
@@ -177,8 +177,8 @@ def register():
         menus.add_dna_import_menu()
         menus.add_rig_logic_texture_node_menu()
 
-        # register the overlay
-        viewport_overlay.register()
+        # register key maps
+        key_maps.register()
 
     except Exception as error:
         logger.error(error)
@@ -213,8 +213,8 @@ def unregister():
         menus.remove_dna_import_menu()
         menus.remove_rig_logic_texture_node_menu()
 
-        # unregister the overlay
-        viewport_overlay.unregister()
+        # unregister key maps
+        key_maps.unregister()
 
         # unregister the classes
         for cls in reversed(classes):
