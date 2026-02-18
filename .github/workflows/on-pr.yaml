@@ -1,28 +1,114 @@
-name: Tests
+name: Dev Checks
 on:
   pull_request:
     branches:
       - main
       - dev
     paths:
-      - 'src/**'
-      - 'tests/**'
-      - '.github/workflows/**.yaml'
-      - '!src/**/release_notes.md'
+      - "src/**"
+      - "tests/**"
+      - ".github/workflows/**.yaml"
+      - "!src/**/release_notes.md"
+      - "pyproject.toml"
+      - "cspell.json"
+      - ".pre-commit-config.yaml"
 
 jobs:
-  test-blender-4-5:
+  lint:
+    name: Lint & Static Analysis
+    uses: poly-hammer/meta-human-dna-addon/.github/workflows/re-use-lint.yaml@dev
+    secrets: inherit
+    with:
+      python-version: "3.11"
+
+  # Test with Blender 4.5
+  test-blender-4-5-ubuntu-latest:
+    needs: [lint]
     name: Blender 4.5 Tests
-    uses: poly-hammer/meta-human-dna-addon/.github/workflows/re-use-tests.yaml@main
+    uses: poly-hammer/meta-human-dna-addon/.github/workflows/re-use-tests.yaml@dev
     secrets: inherit
     with:
       python-version: "3.11"
       blender-version: "4.5"
+      runner-os: "ubuntu-latest"
 
-  test-blender-5-0:
+  test-blender-4-5-windows-latest:
+    needs: [lint]
+    name: Blender 4.5 Tests
+    uses: poly-hammer/meta-human-dna-addon/.github/workflows/re-use-tests.yaml@dev
+    secrets: inherit
+    with:
+      python-version: "3.11"
+      blender-version: "4.5"
+      runner-os: "windows-latest"
+
+  test-blender-4-5-macos-latest:
+    needs: [lint]
+    name: Blender 4.5 Tests
+    uses: poly-hammer/meta-human-dna-addon/.github/workflows/re-use-tests.yaml@dev
+    secrets: inherit
+    with:
+      python-version: "3.11"
+      blender-version: "4.5"
+      runner-os: "macos-latest"
+
+  # Test with Blender 5.0
+  test-blender-5-0-ubuntu-latest:
+    needs: [test-blender-4-5-ubuntu-latest]
     name: Blender 5.0 Tests
-    uses: poly-hammer/meta-human-dna-addon/.github/workflows/re-use-tests.yaml@main
+    uses: poly-hammer/meta-human-dna-addon/.github/workflows/re-use-tests.yaml@dev
     secrets: inherit
     with:
       python-version: "3.11"
       blender-version: "5.0"
+      runner-os: "ubuntu-latest"
+
+  test-blender-5-0-windows-latest:
+    needs: [test-blender-4-5-windows-latest]
+    name: Blender 5.0 Tests
+    uses: poly-hammer/meta-human-dna-addon/.github/workflows/re-use-tests.yaml@dev
+    secrets: inherit
+    with:
+      python-version: "3.11"
+      blender-version: "5.0"
+      runner-os: "windows-latest"
+
+  test-blender-5-0-macos-latest:
+    needs: [test-blender-4-5-macos-latest]
+    name: Blender 5.0 Tests
+    uses: poly-hammer/meta-human-dna-addon/.github/workflows/re-use-tests.yaml@dev
+    secrets: inherit
+    with:
+      python-version: "3.11"
+      blender-version: "5.0"
+      runner-os: "macos-latest"
+
+  benchmark-blender-4-5:
+    needs: [test-blender-5-0-ubuntu-latest, test-blender-5-0-windows-latest, test-blender-5-0-macos-latest]
+    name: Blender 4.5 Benchmark
+    uses: poly-hammer/meta-human-dna-addon/.github/workflows/re-use-benchmark.yaml@dev
+    secrets: inherit
+    with:
+      python-version: "3.11"
+      blender-version: "4.5"
+      runner-os: "ubuntu-latest"
+      iterations: 50
+      warmup: 10
+      threshold: 15
+      is-push: ${{ github.event_name == 'push' }}
+      is-pull-request: ${{ github.event_name == 'pull_request' }}
+
+  benchmark-blender-5-0:
+    needs: [test-blender-5-0-ubuntu-latest, test-blender-5-0-windows-latest, test-blender-5-0-macos-latest]
+    name: Blender 5.0 Benchmark
+    uses: poly-hammer/meta-human-dna-addon/.github/workflows/re-use-benchmark.yaml@dev
+    secrets: inherit
+    with:
+      python-version: "3.11"
+      blender-version: "5.0"
+      runner-os: "ubuntu-latest"
+      iterations: 50
+      warmup: 10
+      threshold: 15
+      is-push: ${{ github.event_name == 'push' }}
+      is-pull-request: ${{ github.event_name == 'pull_request' }}

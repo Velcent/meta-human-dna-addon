@@ -42,6 +42,7 @@
       "options": [
         "",
         "tests/test_animation.py",
+        "tests/test_rbf_edits.py",
         "tests/test_convert_to_dna.py",
         "tests/test_rig_instance_ops.py",
         "tests/test_reference_blend_file.py",
@@ -50,7 +51,7 @@
         "tests/test_head_exporter.py",
         "tests/test_head_rig_logic.py",
         "tests/test_body_rig_logic.py",
-        "tests/test_body_pose_editor.py"
+        "tests/test_body_rbf_editor.py"
       ],
       "description": "What test suite do you want to run?"
     },

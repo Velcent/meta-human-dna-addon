@@ -1,34 +1,85 @@
-import os
-import sys
-import bpy
-import bpy.utils.previews
 import logging
+import os
 
-from . import operators, properties, utilities, manual_map, rig_logic
-from .ui import menus, importer, view_3d, addon_preferences, callbacks
-from .resources.unreal import meta_human_dna_utilities
+import bpy
 
-# ensure these modules are available to the send2ue extension
-sys.modules['meta_human_dna_utilities'] = meta_human_dna_utilities # namespaced for unreal environment
-sys.modules['meta_human_dna.ui.callbacks'] = callbacks
-sys.modules['meta_human_dna.utilities'] = utilities
+# This import is necessary to register custom icons
+import bpy.utils.previews  # pyright: ignore[reportUnusedImport]
 
-logger = logging.getLogger(__name__)
+from . import constants, key_maps, manual_map, operators, properties, rig_instance, utilities
+
+# Backup Manager
+from .editors.backup_manager import operators as backup_manager_operators, ui as backup_manager_ui
+
+# RBF Editor
+from .editors.rbf_editor import operators as rbf_editor_operators, ui as rbf_editor_ui
+from .ui import addon_preferences, importer, menus, view_3d
+
+
+logger = logging.getLogger(constants.ToolInfo.NAME)
 
 bl_info = {
-    "name": "Meta-Human DNA",
+    "name": "MetaHuman DNA",
     "author": "Poly Hammer",
-    "version": (0, 5, 4),
+    "version": (0, 5, 23),
     "blender": (4, 5, 0),
-    "location": "File > Import > Metahuman DNA",
-    "description": "Imports MetaHuman head and body components from a their DNA files, lets you customize them, then send them back to MetaHuman Creator.",
+    "location": "File > Import > MetaHuman DNA",
+    "description": (
+        "Imports MetaHuman head and body components from a their DNA files, "
+        "lets you customize them, then send them back to MetaHuman Creator."
+    ),
     "warning": "",
     "wiki_url": "https://docs.polyhammer.com/meta-human-dna-addon/",
     "category": "Rigging",
 }
 
+# RBF Editor
+rbf_editor_operator_classes = [
+    rbf_editor_operators.AddRBFSolver,
+    rbf_editor_operators.RemoveRBFSolver,
+    rbf_editor_operators.EvaluateRBFSolvers,
+    rbf_editor_operators.EditRBFSolver,
+    rbf_editor_operators.RevertRBFSolver,
+    rbf_editor_operators.CommitRBFSolverChanges,
+    rbf_editor_operators.AddRBFPose,
+    rbf_editor_operators.DuplicateRBFPose,
+    rbf_editor_operators.RemoveRBFPose,
+    rbf_editor_operators.ApplyRBFPoseEdits,
+    rbf_editor_operators.AddRBFDriven,
+    rbf_editor_operators.RemoveRBFDriven,
+    rbf_editor_operators.MirrorRBFSolver,
+    rbf_editor_operators.MirrorRBFPose,
+]
+rbf_editor_ui_classes = [
+    rbf_editor_ui.META_HUMAN_DNA_PT_rbf_editor,
+    rbf_editor_ui.META_HUMAN_DNA_PT_rbf_editor_solver_settings_sub_panel,
+    rbf_editor_ui.META_HUMAN_DNA_PT_rbf_editor_poses_sub_panel,
+    rbf_editor_ui.META_HUMAN_DNA_PT_rbf_editor_drivers_sub_panel,
+    rbf_editor_ui.META_HUMAN_DNA_PT_rbf_editor_driven_sub_panel,
+    rbf_editor_ui.META_HUMAN_DNA_PT_rbf_editor_footer_sub_panel,
+    rbf_editor_ui.META_HUMAN_DNA_UL_bone_selection,
+    rbf_editor_ui.META_HUMAN_DNA_UL_rbf_solvers,
+    rbf_editor_ui.META_HUMAN_DNA_UL_rbf_poses,
+    rbf_editor_ui.META_HUMAN_DNA_UL_rbf_drivers,
+    rbf_editor_ui.META_HUMAN_DNA_UL_rbf_driven,
+]
+
+# Backup Manager
+backup_manager_operator_classes = [
+    backup_manager_operators.META_HUMAN_DNA_OT_restore_backup,
+    backup_manager_operators.META_HUMAN_DNA_OT_delete_backup,
+    backup_manager_operators.META_HUMAN_DNA_OT_open_backup_folder,
+    backup_manager_operators.META_HUMAN_DNA_OT_sync_backups,
+    backup_manager_operators.META_HUMAN_DNA_OT_create_manual_backup,
+]
+backup_manager_ui_classes = [
+    backup_manager_ui.META_HUMAN_DNA_UL_dna_backups,
+    backup_manager_ui.META_HUMAN_DNA_PT_dna_backups,
+]
+
+# Main Addon
 classes = [
-    operators.ImportMetahumanDna,
+    operators.ImportMetaHumanDna,
     operators.DNA_FH_import_dna,
     operators.ConvertSelectedToDna,
     operators.AppendOrLinkMetaHuman,
@@ -38,102 +89,80 @@ classes = [
     operators.BakeComponentAnimation,
     operators.ImportShapeKeys,
     operators.TestSentry,
+    operators.MigrateLegacyData,
     operators.OpenBuildToolDocumentation,
     operators.OpenMetricsCollectionAgreement,
     operators.MetricsCollectionConsent,
     operators.MirrorSelectedBones,
-    operators.SyncWithBodyBonesInBlueprint,
     operators.ShrinkWrapVertexGroup,
     # operators.AutoFitSelectedBones,
     operators.RevertBoneTransformsToDna,
     operators.ForceEvaluate,
     operators.SendToMetaHumanCreator,
-    operators.SendToUnreal,
     operators.ExportSelectedComponent,
     operators.GenerateMaterial,
     operators.SculptThisShapeKey,
     operators.EditThisShapeKey,
     operators.ReImportThisShapeKey,
-    operators.AddRBFSolver,
-    operators.RemoveRBFSolver,
-    operators.EvaluateRBFSolvers,
-    operators.EditRBFSolver,
-    operators.RevertRBFSolver,
-    operators.CommitRBFSolverChanges,
-    operators.AddRBFPose,
-    operators.DuplicateRBFPose,
-    operators.RemoveRBFPose,
-    operators.UpdateRBFPose,
-    operators.AddRBFDriver,
-    operators.RemoveRBFDriver,
-    operators.AddRBFDriven,
-    operators.RemoveRBFDriven,
-    operators.SelectAllRBFDriven,
-    operators.RefreshMaterialSlotNames,
-    operators.RevertMaterialSlotValues,
     operators.DuplicateRigInstance,
     operators.AddRigLogicTextureNode,
-    operators.MetaHumanDnaReportError,
-    operators.UILIST_RIG_LOGIC_OT_entry_move,
-    operators.UILIST_RIG_LOGIC_OT_entry_add,
-    operators.UILIST_RIG_LOGIC_OT_entry_remove,
+    operators.ReportError,
+    operators.ReportErrorWithFix,
+    operators.UILIST_RIG_INSTANCE_OT_entry_move,
+    operators.UILIST_RIG_INSTANCE_OT_entry_add,
+    operators.UILIST_RIG_INSTANCE_OT_entry_remove,
     operators.UILIST_ADDON_PREFERENCES_OT_extra_dna_entry_add,
     operators.UILIST_ADDON_PREFERENCES_OT_extra_dna_entry_remove,
+    *backup_manager_operator_classes,
+    *rbf_editor_operator_classes,
     importer.META_HUMAN_DNA_FILE_DATA_PT_panel,
     importer.META_HUMAN_DNA_LODS_PT_panel,
     importer.META_HUMAN_DNA_EXTRAS_PT_panel,
     importer.META_HUMAN_DNA_FILE_INFO_PT_panel,
     view_3d.META_HUMAN_DNA_PT_face_board,
     view_3d.META_HUMAN_DNA_PT_view_options,
-    view_3d.META_HUMAN_DNA_PT_rig_logic,
-    view_3d.META_HUMAN_DNA_PT_rig_logic_head_sub_panel,
-    view_3d.META_HUMAN_DNA_PT_rig_logic_body_sub_panel,
-    view_3d.META_HUMAN_DNA_PT_rig_logic_footer_sub_panel,
-    view_3d.META_HUMAN_DNA_PT_shape_keys,
-    view_3d.META_HUMAN_DNA_UL_shape_keys,
-    view_3d.META_HUMAN_DNA_PT_pose_editor,
-    view_3d.META_HUMAN_DNA_PT_pose_editor_solver_settings_sub_panel,
-    view_3d.META_HUMAN_DNA_PT_pose_editor_poses_sub_panel,
-    view_3d.META_HUMAN_DNA_PT_pose_editor_drivers_sub_panel,
-    view_3d.META_HUMAN_DNA_PT_pose_editor_driven_sub_panel,
-    view_3d.META_HUMAN_DNA_PT_pose_editor_footer_sub_panel,
-    view_3d.META_HUMAN_DNA_UL_rbf_solvers,
-    view_3d.META_HUMAN_DNA_UL_rbf_poses,
-    view_3d.META_HUMAN_DNA_UL_rbf_drivers,
-    view_3d.META_HUMAN_DNA_UL_rbf_driven,
+    view_3d.META_HUMAN_DNA_PT_rig_instance,
+    view_3d.META_HUMAN_DNA_PT_rig_instance_head_sub_panel,
+    view_3d.META_HUMAN_DNA_PT_rig_instance_body_sub_panel,
+    view_3d.META_HUMAN_DNA_PT_rig_instance_footer_sub_panel,
     view_3d.META_HUMAN_DNA_PT_utilities,
     view_3d.META_HUMAN_DNA_PT_mesh_utilities_sub_panel,
     view_3d.META_HUMAN_DNA_PT_armature_utilities_sub_panel,
     view_3d.META_HUMAN_DNA_PT_animation_utilities_sub_panel,
     # view_3d.META_HUMAN_DNA_PT_materials_utilities_sub_panel,
     view_3d.META_HUMAN_DNA_PT_utilities_sub_panel,
+    *rbf_editor_ui_classes,
+    view_3d.META_HUMAN_DNA_PT_shape_keys,
+    view_3d.META_HUMAN_DNA_UL_shape_keys,
+    *backup_manager_ui_classes,
     view_3d.META_HUMAN_DNA_UL_output_items,
-    view_3d.META_HUMAN_DNA_UL_rig_logic_instances,
-    view_3d.META_HUMAN_DNA_UL_material_slot_to_instance_mapping,
+    view_3d.META_HUMAN_DNA_UL_rig_instances,
     view_3d.META_HUMAN_DNA_PT_output_panel,
-    # view_3d.META_HUMAN_DNA_PT_send2ue_settings_sub_panel,
-    view_3d.META_HUMAN_DNA_PT_buttons_sub_panel
+    view_3d.META_HUMAN_DNA_PT_output_buttons_sub_panel,
+    view_3d.META_HUMAN_DNA_PT_migrate_legacy_data,
 ]
 
 app_handlers = {
-    'load_pre': bpy.app.handlers.persistent(utilities.teardown_scene),
-    'load_post': bpy.app.handlers.persistent(utilities.setup_scene),
-    'undo_pre': bpy.app.handlers.persistent(utilities.pre_undo),
-    'undo_post': bpy.app.handlers.persistent(utilities.post_undo),
-    'redo_pre': bpy.app.handlers.persistent(utilities.pre_redo),
-    'redo_post': bpy.app.handlers.persistent(utilities.post_redo),
-    'render_init': bpy.app.handlers.persistent(utilities.pre_render),
-    'render_complete': bpy.app.handlers.persistent(utilities.post_render),
-    'render_cancel': bpy.app.handlers.persistent(utilities.post_render)
+    "load_pre": bpy.app.handlers.persistent(utilities.teardown_scene),
+    "load_post": bpy.app.handlers.persistent(utilities.setup_scene),
+    "undo_pre": bpy.app.handlers.persistent(utilities.pre_undo),
+    "undo_post": bpy.app.handlers.persistent(utilities.post_undo),
+    "redo_pre": bpy.app.handlers.persistent(utilities.pre_redo),
+    "redo_post": bpy.app.handlers.persistent(utilities.post_redo),
+    "render_init": bpy.app.handlers.persistent(utilities.pre_render),
+    "render_complete": bpy.app.handlers.persistent(utilities.post_render),
+    "render_cancel": bpy.app.handlers.persistent(utilities.post_render),
+    "save_post": bpy.app.handlers.persistent(utilities.post_save),
 }
+
 
 def register():
     """
     Registers the addon classes when the addon is enabled.
     """
-    if os.environ.get('META_HUMAN_DNA_DEV'):
+    if os.environ.get("META_HUMAN_DNA_DEV"):
         logging.basicConfig(level=logging.DEBUG)
-        
+
     try:
         # register the manual map
         bpy.utils.register_manual_map(manual_map.manual_map)
@@ -150,51 +179,35 @@ def register():
         menus.add_dna_import_menu()
         menus.add_rig_logic_texture_node_menu()
 
+        # register key maps
+        key_maps.register()
+
     except Exception as error:
         logger.error(error)
 
     utilities.init_sentry()
 
     # add event handlers
-    bpy.app.handlers.load_pre.append(app_handlers['load_pre'])
-    bpy.app.handlers.load_post.append(app_handlers['load_post'])
-    bpy.app.handlers.undo_pre.append(app_handlers['undo_pre'])
-    bpy.app.handlers.undo_post.append(app_handlers['undo_post'])
-    bpy.app.handlers.redo_pre.append(app_handlers['redo_pre'])
-    bpy.app.handlers.redo_post.append(app_handlers['redo_post'])
-    bpy.app.handlers.render_init.append(app_handlers['render_init'])
-    bpy.app.handlers.render_complete.append(app_handlers['render_complete'])
-    bpy.app.handlers.render_cancel.append(app_handlers['render_cancel'])
+    for handler_name, handler_function in app_handlers.items():
+        getattr(bpy.app.handlers, handler_name).append(handler_function)
 
 
 def unregister():
     """
     Un-registers the addon classes when the addon is disabled.
     """
+    utilities.disable_duplicate_addons()
+
     utilities.teardown_scene()
 
-    # remove event handlers
-    if not os.environ.get('META_HUMAN_DNA_DEV'):
-        rig_logic.stop_listening()
+    if not os.environ.get("META_HUMAN_DNA_DEV"):
+        rig_instance.stop_listening()
 
-    if app_handlers['undo_pre'] in bpy.app.handlers.undo_pre:
-        bpy.app.handlers.undo_pre.remove(app_handlers['undo_pre'])
-    if app_handlers['undo_post'] in bpy.app.handlers.undo_post:
-        bpy.app.handlers.undo_post.remove(app_handlers['undo_post'])
-    if app_handlers['redo_pre'] in bpy.app.handlers.redo_pre:
-        bpy.app.handlers.redo_pre.remove(app_handlers['redo_pre'])
-    if app_handlers['redo_post'] in bpy.app.handlers.redo_post:
-        bpy.app.handlers.redo_post.remove(app_handlers['redo_post'])
-    if app_handlers['load_pre'] in bpy.app.handlers.load_pre:
-        bpy.app.handlers.load_pre.remove(app_handlers['load_pre'])
-    if app_handlers['load_post'] in bpy.app.handlers.load_post:
-        bpy.app.handlers.load_post.remove(app_handlers['load_post'])
-    if app_handlers['render_init'] in bpy.app.handlers.render_init:
-        bpy.app.handlers.render_init.remove(app_handlers['render_init'])
-    if app_handlers['render_complete'] in bpy.app.handlers.render_complete:
-        bpy.app.handlers.render_complete.remove(app_handlers['render_complete'])
-    if app_handlers['render_cancel'] in bpy.app.handlers.render_cancel:
-        bpy.app.handlers.render_cancel.remove(app_handlers['render_cancel'])
+    # remove event handlers
+    for handler_name, handler_function in app_handlers.items():
+        handler_list = getattr(bpy.app.handlers, handler_name)
+        if handler_function in handler_list:
+            handler_list.remove(handler_function)
 
     try:
         # unregister the manual map
@@ -204,9 +217,13 @@ def unregister():
         menus.remove_dna_import_menu()
         menus.remove_rig_logic_texture_node_menu()
 
+        # unregister key maps
+        key_maps.unregister()
+
         # unregister the classes
         for cls in reversed(classes):
-            bpy.utils.unregister_class(cls)
+            if hasattr(cls, "bl_rna"):
+                bpy.utils.unregister_class(cls)
 
         # unregister the properties
         properties.unregister()
